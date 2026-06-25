@@ -1,0 +1,166 @@
+# ============================================================================
+# build system  --  scikit-build-core drives CMake, which builds the
+# nanobind extension module `compas_cnc._clipper2` (a wrapper for Clipper2).
+# ============================================================================
+
+[build-system]
+requires = ["scikit-build-core>=0.10", "nanobind>=2.12"]
+build-backend = "scikit_build_core.build"
+
+# ============================================================================
+# project info
+# ============================================================================
+
+[project]
+name = "compas_cnc"
+description = "Project for cnc fabrication for the compas_tf repository."
+keywords = []
+authors = [
+    { name = "Petras Vestartas", email = "petrasvestartas@gmail.com" },
+]
+license = { file = "LICENSE" }
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "compas>=2",
+    "ezdxf",
+    "numpy>=1.24",
+]
+dynamic = ["version"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Topic :: Scientific/Engineering",
+    "Operating System :: Unix",
+    "Operating System :: POSIX",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+[project.optional-dependencies]
+dev = [
+    "attrs >=17.4",
+    "build",
+    "bump-my-version",
+    "compas_invocations2",
+    "invoke >=0.14",
+    "ruff",
+    "sphinx_compas2_theme",
+    "twine",
+    "wheel",
+]
+
+[project.urls]
+Homepage = "https://BRG-research.github.io/compas_cnc"
+Documentation = "https://BRG-research.github.io/compas_cnc"
+Repository = "https://github.com/BRG-research/compas_cnc"
+Changelog = "https://github.com/BRG-research/compas_cnc/blob/main/CHANGELOG.md"
+Issues = "https://github.com/BRG-research/compas_cnc/issues"
+Forum = "https://forum.compas-framework.org/"
+
+# ============================================================================
+# scikit-build-core
+# ============================================================================
+
+[tool.scikit-build]
+minimum-version = "build-system.requires"
+build-dir = "build/{wheel_tag}"
+wheel.py-api = "cp312"                    # one abi3 wheel for cp312+
+wheel.packages = ["src/compas_cnc"]       # ship the pure-python package too
+cmake.version = ">=3.15"
+cmake.build-type = "Release"
+
+[tool.scikit-build.metadata.version]
+provider = "scikit_build_core.metadata.regex"
+input = "src/compas_cnc/__init__.py"
+
+[tool.scikit-build.cmake.define]
+CMAKE_POLICY_DEFAULT_CMP0135 = "NEW"      # quiet the FetchContent DOWNLOAD_EXTRACT_TIMESTAMP warning
+
+# ============================================================================
+# replace pytest.ini
+# ============================================================================
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py", "test.py"]
+norecursedirs = [
+    "build/*",
+    "dist/*",
+    "*.egg-info",
+    ".git",
+    ".tox",
+    ".env",
+    ".venv",
+    ".pytest_cache",
+    ".ruff_cache",
+]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--doctest-glob=*.rst",
+    "--tb=short",
+    "--import-mode=importlib",
+]
+doctest_optionflags = [
+    "NORMALIZE_WHITESPACE",
+    "IGNORE_EXCEPTION_DETAIL",
+    "ALLOW_UNICODE",
+    "ALLOW_BYTES",
+    "NUMBER",
+]
+
+# ============================================================================
+# replace bumpversion.cfg
+# ============================================================================
+
+[tool.bumpversion]
+current_version = "0.1.0"
+message = "Bump version to {new_version}"
+commit = true
+tag = true
+
+[[tool.bumpversion.files]]
+filename = "src/compas_cnc/__init__.py"
+search = "{current_version}"
+replace = "{new_version}"
+
+[[tool.bumpversion.files]]
+filename = "CHANGELOG.md"
+search = "Unreleased"
+replace = "[{new_version}] {now:%Y-%m-%d}"
+
+# ============================================================================
+# replace setup.cfg
+# ============================================================================
+
+[tool.ruff]
+line-length = 179
+indent-width = 4
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["I001"]
+"tests/*" = ["I001"]
+"tasks.py" = ["I001"]
+
+[tool.ruff.lint.isort]
+force-single-line = true
+known-first-party = ["compas_cnc"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
+
+[tool.ruff.lint.pycodestyle]
+max-doc-length = 179
+
+[tool.ruff.format]
+docstring-code-format = true
+docstring-code-line-length = "dynamic"
