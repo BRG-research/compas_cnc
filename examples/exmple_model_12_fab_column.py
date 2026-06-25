@@ -30,7 +30,6 @@ data_dir = pathlib.Path(__file__).parent.parent / "data"
 GREY = (0.85, 0.85, 0.85)
 RED = (0.9, 0.2, 0.2)
 BLUE = (0.2, 0.4, 0.9)  # cnc table outline
-MAGENTA = (0.9, 0.2, 0.9)  # profile (perimeter) outline tool-path
 
 SCALE = 0.1  # 1:10 model -- the column and its cut features are scaled down 10x.
 
@@ -245,20 +244,20 @@ for o in debug:
     scene.add(o)  # yellow debug lines
 scene.add(final_geometry, hide_coplanaredges=True)  # yellow final geometry
 
-# Green helical drilling spirals down each cylindrical hole.
+# Helical drilling spirals down each cylindrical hole.
 for index, drill in enumerate(drills):
-    scene.add(drill.path, name=f"drill_{index}", color=(0.1, 0.7, 0.2))
+    scene.add(drill.path, name=f"drill_{index}")
 
-# Cyan ramp: the narrow slot (cut_9) descended gradually along one line.
+# Ramp: the narrow slot (cut_9) descended gradually along one line.
 if ramp is not None:
-    scene.add(ramp.path, name="ramp_cut_9", color=(0.1, 0.7, 0.8))
+    scene.add(ramp.path, name="ramp_cut_9")
 
-# Magenta profile outline, CLIPPED to polyline0 (only the part inside the rectangle).
+# Profile outline, CLIPPED to polyline0 (only the part inside the rectangle).
 for index, contour in enumerate(profile_clipped):
-    scene.add(contour, name=f"profile_clip_{index}", color=MAGENTA)
+    scene.add(contour, name=f"profile_clip_{index}")
 
-# Orange end-cut: the start end of the beam ramped down gradually.
-scene.add(end_cut.path, name="end_cut_start", color=(0.95, 0.55, 0.1))
+# End-cut: the start end of the beam ramped down gradually.
+scene.add(end_cut.path, name="end_cut_start")
 
 stock = scene.add_group(f"{column.name}__stock_and_cuts")
 stock.add(triangulated(uncut), name=f"{column.name}_uncut", hide_coplanaredges=True, color=GREY)

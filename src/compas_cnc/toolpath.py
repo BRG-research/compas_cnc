@@ -143,13 +143,17 @@ class toolpath_2d_rectangle:
 
     def _build(self):
         r = self.radius
+        # Inclined cuts EXTEND to the plate edges (no inset): on a 3-axis machine the
+        # offset compensated centre sits above/over the edge so the rim still cuts the
+        # full face. Flat cuts keep the normal inset (the tool stays inside).
+        inset_r = 0.0 if self.incline else r
         across = self.line1.start - self.line0.start  # vector line0 -> line1
         across = across * (1.0 / across.length)
         along = self.line0.vector * (1.0 / self.line0.length)
 
         def inset(line, sign):
-            start = line.start + across * (r * sign) + along * r
-            end = line.end + across * (r * sign) - along * r
+            start = line.start + across * (inset_r * sign) + along * inset_r
+            end = line.end + across * (inset_r * sign) - along * inset_r
             return Line(start, end)
 
         a = inset(self.line0, +1)  # move inward toward line1
