@@ -5,17 +5,23 @@ __email__ = "petrasvestartas@gmail.com"
 __version__ = "0.1.0"
 
 from compas_cnc.dxf import load_dxf
-from compas_cnc.helix_drill import toolpath_helix_drill
-from compas_cnc.ramp_line import toolpath_ramp_line
-from compas_cnc.ramp_path import toolpath_ramp_path
-from compas_cnc.toolpath import toolpath_2d_rectangle
+from compas_cnc.postprocessor import Postprocessor
+from compas_cnc.toolpath_2d_drill import toolpath_2d_drill
+from compas_cnc.toolpath_2d_hatch import toolpath_2d_hatch
+from compas_cnc.toolpath_2d_ramp import toolpath_2d_ramp
+from compas_cnc.toolpath_2d_surfacing import toolpath_2d_surfacing
+from compas_cnc.toolpath_merge import toolpath_merge
+from compas_cnc.tools import Tool
 
 __all__ = [
     "load_dxf",
-    "toolpath_2d_rectangle",
-    "toolpath_helix_drill",
-    "toolpath_ramp_line",
-    "toolpath_ramp_path",
+    "Tool",
+    "Postprocessor",
+    "toolpath_2d_drill",
+    "toolpath_2d_hatch",
+    "toolpath_2d_ramp",
+    "toolpath_2d_surfacing",
+    "toolpath_merge",
 ]
 
 # The Clipper2 wrapper lives in a compiled extension (compas_cnc._clipper2).

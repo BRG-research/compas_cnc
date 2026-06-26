@@ -101,6 +101,9 @@ ENV/
 # mkdocs documentation
 /site
 
+# G-code written by the postprocessing example/screenshot run
+docs/examples/**/*.nc
+
 # mypy
 .mypy_cache/
 

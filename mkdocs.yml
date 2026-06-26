@@ -1,0 +1,106 @@
+site_name: COMPAS CNC
+site_url: https://petrasvestartas.github.io/compas_cnc/
+
+repo_name: petrasvestartas/compas_cnc
+repo_url: https://github.com/petrasvestartas/compas_cnc/
+
+copyright: Copyright &copy; Petras Vestartas
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: blue
+      accent: light blue
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: blue
+      accent: light blue
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  font:
+    text: Roboto
+    code: Roboto Mono
+  features:
+    - content.code.copy
+    - navigation.expand
+    - navigation.footer
+    - navigation.indexes
+    - navigation.sections
+    - navigation.top
+    - search.highlight
+    - search.suggest
+    - toc.follow
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - callouts:
+      strip_period: no
+  - pymdownx.highlight:
+      anchor_linenums: true
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets:
+      check_paths: true
+  - pymdownx.superfences
+  - toc:
+      permalink: "¤"
+
+plugins:
+  - search
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          paths: [src]
+          inventories:
+            - https://docs.python.org/3/objects.inv
+            - https://compas.dev/compas/latest/objects.inv
+          options:
+            docstring_style: numpy
+            docstring_section_style: list
+            filters: public
+            heading_level: 1
+            merge_init_into_class: true
+            separate_signature: true
+            show_root_heading: true
+            show_root_full_path: true
+            show_signature_annotations: true
+            show_source: false
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            summary:
+              modules: false
+
+nav:
+  - Introduction: index.md
+  - Installation: installation.md
+  - Examples:
+      - Toolpaths:
+          - Drilling: examples/toolpaths/drilling.md
+          - Ramping: examples/toolpaths/ramping.md
+          - Surfacing: examples/toolpaths/surfacing.md
+          - Hatching: examples/toolpaths/hatching.md
+          - Hatching Layered: examples/toolpaths/hatching_layered.md
+          - Merging: examples/toolpaths/merging.md
+          - Postprocessing: examples/toolpaths/postprocessing.md
+  - API:
+      - toolpath_2d_drill: api/compas_cnc.toolpath_2d_drill.md
+      - toolpath_2d_ramp: api/compas_cnc.toolpath_2d_ramp.md
+      - toolpath_2d_surfacing: api/compas_cnc.toolpath_2d_surfacing.md
+      - toolpath_2d_hatch: api/compas_cnc.toolpath_2d_hatch.md
+      - toolpath_merge: api/compas_cnc.toolpath_merge.md
+      - Tool: api/compas_cnc.tools.Tool.md
+      - Postprocessor: api/compas_cnc.postprocessor.Postprocessor.md
+  - License: license.md

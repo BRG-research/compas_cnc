@@ -1,5 +1,3 @@
-"""2D rectangular pocket-clearing milling tool-path."""
-
 import math
 
 from compas.geometry import Line
@@ -7,12 +5,15 @@ from compas.geometry import Point
 from compas.geometry import Polyline
 from compas.geometry import Translation
 
-__all__ = ["toolpath_2d_rectangle"]
+from compas_cnc._milling import signed_area_xy
+from compas_cnc._milling import want_ccw
+
+__all__ = ["toolpath_2d_surfacing"]
 
 MIN_CLEARANCE = 10.0  # lead-in/out must clear the tool-path by at least this (units)
 
 
-class toolpath_2d_rectangle:
+class toolpath_2d_surfacing:
     """Zigzag (boustrophedon) milling tool-path that clears the rectangle bounded
     by two parallel edges, then runs a finishing contour around the full boundary.
 
@@ -44,6 +45,12 @@ class toolpath_2d_rectangle:
     stepover : float, optional
         Distance between passes. Defaults to ``radius``; actual spacing is always
         ``<= stepover`` (the pass count is rounded up).
+    direction : {None, "climb", "conventional"}, optional
+        Milling direction for hard materials (assumes a CW / M3 tool; on M4 pick the
+        opposite label). When set, the finishing contour is wound to match (the
+        rectangle is a pocket wall) and the zig-zag goes one-directional (every pass
+        cut the same way, lift + rapid between). ``None`` (default) is the faster
+        bidirectional zig-zag, fine for soft materials.
 
     Attributes
     ----------
@@ -56,7 +63,7 @@ class toolpath_2d_rectangle:
     safe_z : float
     """
 
-    def __init__(self, line0, line1, radius, safe_z=None, stepover=None, incline=False):
+    def __init__(self, line0, line1, radius, safe_z=None, stepover=None, incline=False, direction=None):
         self.line0 = line0
         self.line1 = line1
         self.radius = radius
@@ -65,6 +72,12 @@ class toolpath_2d_rectangle:
             self.stepover *= 0.5  # tilted face: halve the spacing so tool passes overlap >= half (scallop control)
         self._safe_z_request = safe_z
         self.incline = incline
+        if direction not in (None, "climb", "conventional"):
+            raise ValueError("direction must be None, 'climb', or 'conventional'.")
+        self.direction = direction
+        # A milling direction needs a one-directional zig-zag (every pass cut the same
+        # way); with no direction we take the faster bidirectional zig-zag.
+        self.one_directional = direction is not None
         self._build()
 
     # ------------------------------------------------------------------ #
@@ -72,10 +85,13 @@ class toolpath_2d_rectangle:
     # ------------------------------------------------------------------ #
 
     @classmethod
-    def from_quad(cls, points, radius, safe_z=None, stepover=None, flip=False, incline=False):
+    def from_quad(cls, points, radius, safe_z=None, stepover=None, flip=False, incline=False, direction=None):
         """Build a tool-path that fills a 4-corner face.
 
-        ``points`` are the face's 4 corners in order.
+        ``points`` are the face's 4 corners in order -- as an open list/polyline of
+        4 points, OR a CLOSED polyline of 5 (the repeated closing corner is dropped),
+        so the same outline you draw can be passed straight in. Returns ``None`` if
+        it is not 4 corners.
 
         ``flip`` -- the zigzag direction (boolean): ``False`` (default) sweeps along
         the LONGER side (fewer, longer passes); ``True`` sweeps the PERPENDICULAR
@@ -85,7 +101,12 @@ class toolpath_2d_rectangle:
         up-slope along the subdivision direction, so the FLAT tool's edge rides the
         surface instead of its centre digging into the material (see ``_build``).
         """
-        v0, v1, v2, v3 = [Point(*p) for p in points[:4]]
+        pts = [Point(*p) for p in points]
+        if len(pts) >= 2 and pts[0].distance_to_point(pts[-1]) < 1e-9:
+            pts = pts[:-1]  # accept a CLOSED polyline too -- drop the duplicated closing corner
+        if len(pts) != 4:
+            return None  # from_quad needs exactly four corners
+        v0, v1, v2, v3 = pts
         pair_a = (Line(v0, v1), Line(v3, v2))  # one pair of opposite edges
         pair_b = (Line(v1, v2), Line(v0, v3))  # the other pair
         len_a = pair_a[0].length + pair_a[1].length
@@ -99,10 +120,10 @@ class toolpath_2d_rectangle:
         gap = (line1.start - line0.start).length
         if min(line0.length, line1.length) <= 2 * radius or gap <= 2 * radius:
             return None
-        return cls(line0, line1, radius, safe_z=safe_z, stepover=stepover, incline=incline)
+        return cls(line0, line1, radius, safe_z=safe_z, stepover=stepover, incline=incline, direction=direction)
 
     @classmethod
-    def from_mesh_face(cls, mesh, face_id, radius, safe_z=None, stepover=None, flip=False, incline=False):
+    def from_mesh_face(cls, mesh, face_id, radius, safe_z=None, stepover=None, flip=False, incline=False, direction=None):
         """Build a tool-path from the face ``face_id`` you choose on a mesh.
 
         ``flip``/``incline`` -- see :meth:`from_quad`. Returns ``None`` if that face
@@ -111,10 +132,10 @@ class toolpath_2d_rectangle:
         coords = mesh.face_coordinates(face_id)
         if len(coords) != 4:
             return None
-        return cls.from_quad(coords, radius, safe_z=safe_z, stepover=stepover, flip=flip, incline=incline)
+        return cls.from_quad(coords, radius, safe_z=safe_z, stepover=stepover, flip=flip, incline=incline, direction=direction)
 
     @classmethod
-    def from_plate(cls, mesh, radius, safe_z=None, stepover=None, top=False, flip=False, incline=False):
+    def from_plate(cls, mesh, radius, safe_z=None, stepover=None, top=False, flip=False, incline=False, direction=None):
         """Build a tool-path from a plate-like cutter's large face.
 
         A plate's two LARGEST faces are its top and bottom (both quads); the thin
@@ -137,7 +158,7 @@ class toolpath_2d_rectangle:
         big = sorted(quads, key=mesh.face_area, reverse=True)[:2]  # top + bottom
         big.sort(key=lambda fk: sum(p[2] for p in mesh.face_coordinates(fk)))  # by Z
         face_id = big[1] if top else big[0]
-        return cls.from_quad(mesh.face_coordinates(face_id), radius, safe_z=safe_z, stepover=stepover, flip=flip, incline=incline)
+        return cls.from_quad(mesh.face_coordinates(face_id), radius, safe_z=safe_z, stepover=stepover, flip=flip, incline=incline, direction=direction)
 
     # ------------------------------------------------------------------ #
 
@@ -165,25 +186,31 @@ class toolpath_2d_rectangle:
             t = i / n
             pa = a.start + a.vector * t
             pb = b.start + b.vector * t
-            zpts.extend([pa, pb] if i % 2 == 0 else [pb, pa])
+            if self.one_directional:
+                zpts.extend([pa, pb])  # every pass cuts pa -> pb (consistent direction)
+            else:
+                zpts.extend([pa, pb] if i % 2 == 0 else [pb, pa])  # boustrophedon snake
 
         self.zigzag = Polyline(zpts)
         self.passes = n + 1
         self.spacing = a.length / n
 
         # Finishing contour: walk the inset perimeter along EDGES ONLY (never
-        # diagonally) from where the zigzag ended, around the full boundary, until
-        # it returns to the start corner (the initial position). Consecutive corners
-        # in `cycle` share an edge, so there is never a diagonal cross; the walk may
-        # go round a little more than once, which is fine for a finishing pass.
+        # diagonally) from where the zigzag ended, around the full boundary, back to
+        # the start corner. Consecutive corners in `cycle` share an edge, so there is
+        # never a diagonal cross; the walk goes round a little more than once -- fine
+        # for a finishing pass. With a milling `direction` set it runs CW or CCW to
+        # match (the rectangle is a pocket wall -> cleared_inside=True); else legacy.
         bl, tl = a.start, a.end  # rail a (line0 edge): bottom/top corner
         br, tr = b.start, b.end  # rail b (line1 edge): bottom/top corner
         cycle = [bl, br, tr, tl]  # consecutive corners are edge-connected (no diagonal)
-        start_i = 3 if (n % 2 == 1) else 2  # zigzag ends at tl (n odd) or tr (n even)
+        start_i = min(range(4), key=lambda i: cycle[i].distance_to_point(zpts[-1]))  # nearest the zigzag end
+        ccw = want_ccw(self.direction, cleared_inside=True)
+        step = +1 if ccw is None else (+1 if (signed_area_xy(cycle) > 0) == ccw else -1)
         contour = []
         k, edges = start_i, 0
         while True:
-            k = (k + 1) % 4
+            k = (k + step) % 4
             contour.append(cycle[k])
             edges += 1
             if cycle[k] is bl and edges >= 4:  # back at start, full boundary covered
@@ -197,31 +224,38 @@ class toolpath_2d_rectangle:
         self.safe_z = floor if self._safe_z_request is None else max(self._safe_z_request, floor)
         lead_in = Point(bl[0], bl[1], self.safe_z)
         lead_out = Point(bl[0], bl[1], self.safe_z)
-        self.path = Polyline([lead_in] + zpts + contour + [lead_out])
+        if self.one_directional:
+            # Each pass: plunge -> cut pa->pb -> retract; rapid across to the next pass.
+            body = [lead_in]
+            for i in range(0, len(zpts), 2):
+                pa, pb = zpts[i], zpts[i + 1]
+                body += [Point(pa[0], pa[1], pa[2]), Point(pb[0], pb[1], pb[2])]
+                if i + 2 < len(zpts):
+                    nxt = zpts[i + 2]
+                    body.append(Point(pb[0], pb[1], self.safe_z))    # retract
+                    body.append(Point(nxt[0], nxt[1], self.safe_z))  # rapid to the next pass
+            self.path = Polyline(body + list(contour) + [lead_out])
+        else:
+            self.path = Polyline([lead_in] + zpts + list(contour) + [lead_out])
 
-        # Flat tool on a TILTED face: the path is the tool CENTRE, so a flat bit
-        # would sink into the material by `radius` on the slope. Compensate using the
-        # face's FULL slope (so BOTH inclination axes are handled, not just one): take
-        # the face normal, project it to XY (the tool axis is vertical), and shift the
-        # whole path by `radius` UP-slope -- i.e. opposite the normal's horizontal part.
+        # Flat tool on a TILTED face: the tool-path is the tool CENTRE, but a flat
+        # bit only touches an inclined plane at its UP-SLOPE rim -- so if the centre
+        # rode the surface, the disk would sink into the material on the up-slope
+        # side. Shift the whole path DOWN-SLOPE by the tool `radius` (in XY, keeping
+        # Z), so the up-slope rim lands on each target point and the rest of the disk
+        # stays above the surface. The face's full slope is used, so a face tilted on
+        # both axes is handled. No shift on a horizontal face.
         if self.incline:
-            # Flat tool, VERTICAL axis, on a TILTED face. The zigzag points are where
-            # we want the tool to CUT (touch the surface). A horizontal flat bottom
-            # only contacts an inclined plane at its UP-slope rim, so to land that rim
-            # on each point the tool CENTRE must sit `radius` DOWN-slope of it (same Z).
-            # Down-slope (in XY) is the horizontal part of the UP-pointing face normal.
-            # The rest of the disk then stays above the surface -> no protrusion.
             normal = along.cross(across)
             if normal[2] < 0:
                 normal = normal * -1.0  # point up, out of the kept material
-            hx, hy = normal[0], normal[1]  # horizontal part of the normal = DOWN-slope dir
+            hx, hy = normal[0], normal[1]  # horizontal part of the up-normal = DOWN-slope dir
             hlen = (hx * hx + hy * hy) ** 0.5  # 0 if the face is horizontal -> no shift
             if hlen > 1e-9:
-                d = 0.5 * r  # half the passed radius (= the TRUE tool radius if `radius` is a diameter)
-                shift = Translation.from_vector([hx / hlen * d, hy / hlen * d, 0.0])  # down-slope, in XY
+                shift = Translation.from_vector([hx / hlen * r, hy / hlen * r, 0.0])  # down-slope by the tool radius
                 self.zigzag = self.zigzag.transformed(shift)
                 self.contour = self.contour.transformed(shift)
                 self.path = self.path.transformed(shift)
 
     def __repr__(self):
-        return f"toolpath_2d_rectangle(passes={self.passes}, spacing={self.spacing:.3f}, radius={self.radius}, safe_z={self.safe_z})"
+        return f"toolpath_2d_surfacing(passes={self.passes}, spacing={self.spacing:.3f}, radius={self.radius}, safe_z={self.safe_z})"

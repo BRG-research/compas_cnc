@@ -349,6 +349,7 @@ def hatch(
     angle=0.0,
     fill_rule="nonzero",
     precision=4,
+    holes=None,
 ) -> list[Line]:
     """Fill a closed polyline with parallel lines clipped to its interior.
 
@@ -372,6 +373,9 @@ def hatch(
         rings as holes. Defaults to ``"nonzero"``.
     precision : int, optional
         Decimal places Clipper2 keeps internally (0..8). Defaults to ``4``.
+    holes : sequence, optional
+        Closed rings to subtract from ``boundary`` (islands the fill must avoid).
+        When given, ``fill_rule`` is forced to ``"even_odd"``. Defaults to ``None``.
 
     Returns
     -------
@@ -420,7 +424,11 @@ def hatch(
         pts = _rotate(np.array([start, end]), angle) + centroid
         lines_world.append([[float(pts[0, 0]), float(pts[0, 1])], [float(pts[1, 0]), float(pts[1, 1])]])
 
-    boundary_path = _to_paths([ring])
+    rings = [ring]
+    if holes:
+        rings += [_open_ring(_as_xy(hole)) for hole in holes]
+        fill_rule = "even_odd"  # inner rings are subtracted as holes
+    boundary_path = _to_paths(rings)
 
     clipped = _clipper2.clip_lines(lines_world, boundary_path, _FILL_RULES[fill_rule], int(precision))
 

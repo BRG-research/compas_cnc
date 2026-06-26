@@ -48,9 +48,14 @@ dev = [
     "compas_invocations2",
     "invoke >=0.14",
     "ruff",
-    "sphinx_compas2_theme",
     "twine",
     "wheel",
+]
+docs = [
+    "markdown-callouts >=0.4",
+    "mkdocs >=1.6",
+    "mkdocs-material >=9.5",
+    "mkdocstrings[python]",
 ]
 
 [project.urls]
