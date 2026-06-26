@@ -1,5 +1,8 @@
 # compas_cnc
 
+<img width="1602" height="897" alt="image" src="https://github.com/user-attachments/assets/437b38e4-cf79-4fe2-b990-3529d0c45fea" />
+
+
 Project for cnc fabrication for the compas_tf repository.
 
 ## Installation
