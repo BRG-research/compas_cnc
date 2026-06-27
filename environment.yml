@@ -1,0 +1,14 @@
+name: compas_cnc-dev
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python <=3.12
+  - pip
+  - cmake
+  - compas
+  - compas_viewer
+  - pip:
+      - -r requirements-dev.txt
+      - -r requirements-docs.txt
+      - .
