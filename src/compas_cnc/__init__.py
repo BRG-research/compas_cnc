@@ -2,7 +2,7 @@ __author__ = ["Petras Vestartas"]
 __copyright__ = "Petras Vestartas"
 __license__ = "MIT License"
 __email__ = "petrasvestartas@gmail.com"
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 from compas_cnc.dxf import load_dxf
 from compas_cnc.postprocessor import Postprocessor
