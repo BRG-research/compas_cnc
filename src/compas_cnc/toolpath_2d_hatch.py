@@ -263,7 +263,7 @@ class toolpath_2d_hatch:
             if i + 1 < len(ordered):
                 nxt = ordered[i + 1][0]
                 if self.one_directional or self._link_leaves_region(b, nxt):
-                    pts.append(Point(b[0], b[1], self.safe_z))      # retract over the wall/island
+                    pts.append(Point(b[0], b[1], self.safe_z))  # retract over the wall/island
                     pts.append(Point(nxt[0], nxt[1], self.safe_z))  # rapid across (next pass plunges)
         return pts
 
@@ -280,8 +280,8 @@ class toolpath_2d_hatch:
                 loop = oriented(loop, ccw)
             if loop[0].distance_to_point(loop[-1]) > 1e-9:
                 loop.append(loop[0])  # close the loop
-            pts.append(Point(loop[0][0], loop[0][1], self.safe_z))    # rapid to the loop start
-            pts += loop                                               # cut around the wall
+            pts.append(Point(loop[0][0], loop[0][1], self.safe_z))  # rapid to the loop start
+            pts += loop  # cut around the wall
             pts.append(Point(loop[-1][0], loop[-1][1], self.safe_z))  # retract
         return pts
 
@@ -292,9 +292,9 @@ class toolpath_2d_hatch:
     def _assemble_single(self, ordered):
         start = ordered[0][0]
         last = ordered[-1][1]
-        points = [Point(start[0], start[1], self.safe_z)]      # lead-in (plunge)
+        points = [Point(start[0], start[1], self.safe_z)]  # lead-in (plunge)
         points += self._layer_cut(ordered, self.z)
-        points.append(Point(last[0], last[1], self.safe_z))    # retract after the fill
+        points.append(Point(last[0], last[1], self.safe_z))  # retract after the fill
         if self.contour:
             points += self._contour_points(self.z)
         points.append(Point(start[0], start[1], self.safe_z))  # home
@@ -359,7 +359,7 @@ class toolpath_2d_hatch:
         first = True
         for level in self.levels:
             if not first:
-                points.append(Point(last[0], last[1], self.safe_z))    # retract
+                points.append(Point(last[0], last[1], self.safe_z))  # retract
                 points.append(Point(start[0], start[1], self.safe_z))  # rapid back to the start
             first = False
             points += self._layer_cut(ordered, level)  # plunge to start @ level, clear
@@ -457,7 +457,4 @@ class toolpath_2d_hatch:
         return best
 
     def __repr__(self):
-        return (
-            f"toolpath_2d_hatch(lines={len(self.lines)}, spacing={self.spacing}, "
-            f"angle={math.degrees(self.angle):.1f}deg, layers={self.layers}, depth={self.depth})"
-        )
+        return f"toolpath_2d_hatch(lines={len(self.lines)}, spacing={self.spacing}, angle={math.degrees(self.angle):.1f}deg, layers={self.layers}, depth={self.depth})"

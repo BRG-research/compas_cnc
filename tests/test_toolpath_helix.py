@@ -75,7 +75,7 @@ def test_bottom_pass_adds_a_closing_circle():
     without = toolpath_2d_drill(axis, hole_radius=5.0, tool_diameter=3.0, bottom_pass=False)
     assert len(with_pass.helix) > len(without.helix)
     # the extra points all sit at the bottom of the hole
-    extra = list(with_pass.helix)[len(without.helix):]
+    extra = list(with_pass.helix)[len(without.helix) :]
     assert all(p[2] == pytest.approx(0.0, abs=1e-6) for p in extra)
 
 

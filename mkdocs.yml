@@ -1,8 +1,8 @@
 site_name: COMPAS CNC
-site_url: https://petrasvestartas.github.io/compas_cnc/
+site_url: https://BRG-research.github.io/compas_cnc/
 
-repo_name: petrasvestartas/compas_cnc
-repo_url: https://github.com/petrasvestartas/compas_cnc/
+repo_name: BRG-research/compas_cnc
+repo_url: https://github.com/BRG-research/compas_cnc/
 
 copyright: Copyright &copy; Petras Vestartas
 
@@ -68,6 +68,7 @@ plugins:
             - https://docs.python.org/3/objects.inv
             - https://compas.dev/compas/latest/objects.inv
           options:
+            allow_inspection: false  # parse src/ statically -- CI needs no compiled extension
             docstring_style: numpy
             docstring_section_style: list
             filters: public

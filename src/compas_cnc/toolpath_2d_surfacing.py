@@ -232,7 +232,7 @@ class toolpath_2d_surfacing:
                 body += [Point(pa[0], pa[1], pa[2]), Point(pb[0], pb[1], pb[2])]
                 if i + 2 < len(zpts):
                     nxt = zpts[i + 2]
-                    body.append(Point(pb[0], pb[1], self.safe_z))    # retract
+                    body.append(Point(pb[0], pb[1], self.safe_z))  # retract
                     body.append(Point(nxt[0], nxt[1], self.safe_z))  # rapid to the next pass
             self.path = Polyline(body + list(contour) + [lead_out])
         else:

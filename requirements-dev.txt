@@ -3,7 +3,7 @@ build
 bump-my-version
 compas_invocations2
 invoke >=0.14
+pytest >=7
 ruff
-sphinx_compas2_theme
 twine
 wheel

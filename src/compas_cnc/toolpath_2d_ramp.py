@@ -409,7 +409,7 @@ class toolpath_2d_ramp:
             rv = vidx % mring if closed else vidx
             if do_notch and rv in notch:
                 out.append(base + notch[rv])  # penetrate along the corner bisector
-                out.append(base)              # come back to the path and carry on
+                out.append(base)  # come back to the path and carry on
 
         # Each traverse spans arc fraction 0..1; pass k descends from k/n to
         # (k+1)/n of the full descent, so the slope is even along the path.
@@ -456,7 +456,4 @@ class toolpath_2d_ramp:
         self.path = Polyline([lead_in] + points + [lead_out, home])
 
     def __repr__(self):
-        return (
-            f"toolpath_2d_ramp(passes={self.passes}, step={self.step:.3f}, "
-            f"ramp_angle={math.degrees(self.ramp_angle):.1f}deg, depth={self.depth:.3f}, safe_z={self.safe_z})"
-        )
+        return f"toolpath_2d_ramp(passes={self.passes}, step={self.step:.3f}, ramp_angle={math.degrees(self.ramp_angle):.1f}deg, depth={self.depth:.3f}, safe_z={self.safe_z})"

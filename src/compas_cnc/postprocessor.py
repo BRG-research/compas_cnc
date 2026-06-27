@@ -295,9 +295,7 @@ class Postprocessor:
         if not violations or self.on_exceed == "ignore":
             return
         detail = "; ".join(
-            f"{v['axis']} span {v['span']:.2f} mm > {v['limit']:.2f} mm reach "
-            f"(over by {v['over']:.2f} mm, {v['axis']} {v['min']:.2f}..{v['max']:.2f})"
-            for v in violations
+            f"{v['axis']} span {v['span']:.2f} mm > {v['limit']:.2f} mm reach (over by {v['over']:.2f} mm, {v['axis']} {v['min']:.2f}..{v['max']:.2f})" for v in violations
         )
         message = f"tool-path exceeds the Carvera Air travel envelope: {detail}"
         if self.on_exceed == "warn":
@@ -334,7 +332,4 @@ class Postprocessor:
         return path
 
     def __repr__(self):
-        return (
-            f"Postprocessor(tool_number={self.tool_number}, feed={self.feed}, "
-            f"spindle_speed={self.spindle_speed}, coolant={self.coolant!r})"
-        )
+        return f"Postprocessor(tool_number={self.tool_number}, feed={self.feed}, spindle_speed={self.spindle_speed}, coolant={self.coolant!r})"

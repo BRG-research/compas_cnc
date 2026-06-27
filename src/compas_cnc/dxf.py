@@ -5,7 +5,6 @@ it to ASCII DXF first (e.g. "Save As -> AutoCAD DXF", or the ODA File Converter)
 """
 
 import ezdxf
-
 from compas.geometry import Line
 from compas.geometry import Point
 from compas.geometry import Polyline

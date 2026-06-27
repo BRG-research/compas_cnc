@@ -1,7 +1,5 @@
 """Tests for climb/conventional milling-direction control across the toolpaths."""
 
-import math
-
 import pytest
 from compas.geometry import Line
 from compas.geometry import Polyline

@@ -47,6 +47,7 @@ dev = [
     "bump-my-version",
     "compas_invocations2",
     "invoke >=0.14",
+    "pytest >=7",
     "ruff",
     "twine",
     "wheel",
@@ -84,6 +85,25 @@ input = "src/compas_cnc/__init__.py"
 
 [tool.scikit-build.cmake.define]
 CMAKE_POLICY_DEFAULT_CMP0135 = "NEW"      # quiet the FetchContent DOWNLOAD_EXTRACT_TIMESTAMP warning
+
+# ============================================================================
+# cibuildwheel  --  builds the redistributable wheels in CI. CMake FetchContent
+# downloads Clipper2 from the internet at configure time (no system deps), so
+# the only build requirement is a C++17 compiler, which every runner ships.
+# ============================================================================
+
+[tool.cibuildwheel]
+build-verbosity = 3
+test-requires = ["numpy>=1.24", "compas>=2", "pytest", "build"]
+test-command = "pip list && pytest {project}/tests"
+build-frontend = "pip"
+manylinux-x86_64-image = "manylinux_2_28"
+# one abi3 wheel per platform (cp312+ via wheel.py-api above), so only build the
+# cp312 tag; skip the 32-bit / musl / PyPy targets we do not support.
+build = ["cp312-*"]
+skip = ["*_i686", "*-musllinux_*", "*-win32", "pp*"]
+macos.environment.MACOSX_DEPLOYMENT_TARGET = "11.00"
+macos.archs = ["x86_64", "arm64"]
 
 # ============================================================================
 # replace pytest.ini

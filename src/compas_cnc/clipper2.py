@@ -178,7 +178,7 @@ def offset_polyline(
     --------
     >>> from compas.geometry import Polyline
     >>> square = Polyline([[0, 0, 0], [10, 0, 0], [10, 10, 0], [0, 10, 0], [0, 0, 0]])
-    >>> result = offset_polyline(square, 2.0)            # grow outward
+    >>> result = offset_polyline(square, 2.0)  # grow outward
     >>> len(result)
     1
     """
@@ -282,11 +282,10 @@ def outline(
     --------
     >>> from compas.datastructures import Mesh
     >>> box = Mesh.from_vertices_and_faces(
-    ...     [[0, 0, 0], [10, 0, 0], [10, 8, 0], [0, 8, 0],
-    ...      [0, 0, 5], [10, 0, 5], [10, 8, 5], [0, 8, 5]],
+    ...     [[0, 0, 0], [10, 0, 0], [10, 8, 0], [0, 8, 0], [0, 0, 5], [10, 0, 5], [10, 8, 5], [0, 8, 5]],
     ...     [[0, 1, 2, 3], [4, 5, 6, 7]],
     ... )
-    >>> contours = outline(box, 3.0)            # 10x8 footprint grown by 3
+    >>> contours = outline(box, 3.0)  # 10x8 footprint grown by 3
     >>> len(contours)
     1
     """
