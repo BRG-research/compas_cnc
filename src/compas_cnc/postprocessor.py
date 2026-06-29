@@ -126,6 +126,7 @@ class Postprocessor:
         tool=None,
         tool_number=1,
         feed=200.0,
+        plunge_feed=None,
         spindle_speed=12000,
         coolant="mist",
         rapid_z=None,
@@ -142,6 +143,7 @@ class Postprocessor:
         self.tool = tool
         self.tool_number = int(tool_number)
         self.feed = float(feed)
+        self.plunge_feed = None if plunge_feed is None else float(plunge_feed)
         self.spindle_speed = int(spindle_speed)
         self.coolant = coolant
         self.rapid_z = None if rapid_z is None else float(rapid_z)
@@ -225,19 +227,32 @@ class Postprocessor:
         return lines
 
     def body(self, points):
-        """Linear ``G1`` moves with modal coordinates (only changed axes printed)."""
-        rapid_z = self.rapid_z if self.rapid_z is not None else max(p.z for p in points)
-        prev = {"X": None, "Y": None, "Z": self._fmt(rapid_z)}  # Z is known after the G0 lift
+        """Motion block printing X, Y and Z on EVERY line, so the height is explicit.
+
+        Moves that reach the safe plane (``rapid_z``) are non-cutting retracts /
+        repositions and go out as rapid ``G0``; everything below it cuts and goes out
+        as ``G1`` at ``feed`` (or ``plunge_feed`` for a straight Z-down plunge). The
+        feed word is modal, emitted only when it changes.
+        """
+        rapid_z = self._fmt(self.rapid_z if self.rapid_z is not None else max(p.z for p in points))
+        feed = self.feed  # the header already emitted G1 F{feed}
+        prev = None  # previous (x, y, z) as formatted strings
         lines = []
         for point in points:
-            words = []
-            for axis, value in (("X", point.x), ("Y", point.y), ("Z", point.z)):
-                text = self._fmt(value)
-                if prev[axis] != text:
-                    words.append(axis + text)
-                    prev[axis] = text
-            if words:
-                lines.append("G1 " + " ".join(words))
+            x, y, z = self._fmt(point.x), self._fmt(point.y), self._fmt(point.z)
+            if prev == (x, y, z):
+                continue  # no motion -- skip a coincident point
+            if z == rapid_z:  # at the safe plane -> non-cutting rapid
+                lines.append(f"G0 X{x} Y{y} Z{z}")
+            else:
+                plunging = self.plunge_feed is not None and prev is not None and x == prev[0] and y == prev[1] and float(z) < float(prev[2]) - 1e-9
+                want = self.plunge_feed if plunging else self.feed
+                move = f"G1 X{x} Y{y} Z{z}"
+                if want != feed:
+                    move += f" F{self._fmt(want)}"
+                    feed = want
+                lines.append(move)
+            prev = (x, y, z)
         return lines
 
     def footer(self):

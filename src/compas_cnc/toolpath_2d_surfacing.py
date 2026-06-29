@@ -85,7 +85,7 @@ class toolpath_2d_surfacing:
     # ------------------------------------------------------------------ #
 
     @classmethod
-    def from_quad(cls, points, radius, safe_z=None, stepover=None, flip=False, incline=False, direction=None):
+    def from_quad(cls, points, radius, safe_z=None, stepover=None, flip=False, incline=False, direction=None, start=None):
         """Build a tool-path that fills a 4-corner face.
 
         ``points`` are the face's 4 corners in order -- as an open list/polyline of
@@ -100,6 +100,13 @@ class toolpath_2d_surfacing:
         ``incline`` -- if the face is tilted, shift the whole tool-path by ``radius``
         up-slope along the subdivision direction, so the FLAT tool's edge rides the
         surface instead of its centre digging into the material (see ``_build``).
+
+        ``start`` -- where the sweep BEGINS (it becomes ``line0.start``): ``None``
+        (default) starts at the HIGHEST corner, so a tilted face is cut from the top
+        downhill; an integer ``0-3`` selects that corner of the face outline by index
+        (the order ``points`` are given / the mesh face's corner loop); or pass a
+        point ``(x, y, z)`` to start at the corner nearest it. On a flat face ``None``
+        keeps the ``flip`` start. Re-orients the rails only; the zigzag is unchanged.
         """
         pts = [Point(*p) for p in points]
         if len(pts) >= 2 and pts[0].distance_to_point(pts[-1]) < 1e-9:
@@ -114,6 +121,22 @@ class toolpath_2d_surfacing:
         auto = pair_b if len_a >= len_b else pair_a  # rails = shorter edges -> sweep long side
         other = pair_a if len_a >= len_b else pair_b
         line0, line1 = other if flip else auto
+        # Pick the start corner (it becomes line0.start): the HIGHEST corner by
+        # default, or the corner nearest `start`. Swapping the rails / flipping both
+        # keeps line0.start and line1.start edge-connected, so the raster and contour
+        # walk stay valid. On a flat face the default leaves the `flip` start as is.
+        ends = [line0.start, line0.end, line1.start, line1.end]
+        if start is None:
+            which = max(range(4), key=lambda i: ends[i][2])  # highest corner by Z
+        else:
+            target = pts[start % 4] if isinstance(start, int) else Point(*start)  # outline id, or a point
+            which = min(range(4), key=lambda i: ends[i].distance_to_point(target))
+        if which >= 2:  # the chosen corner is on line1 -> make that rail line0
+            line0, line1 = line1, line0
+            which -= 2
+        if which == 1:  # the chosen corner is the rail END -> flip both rails so it is the START
+            line0 = Line(line0.end, line0.start)
+            line1 = Line(line1.end, line1.start)
         # A tool of `radius` insets `radius` off every edge, so the face must be
         # wider than the tool DIAMETER on both axes -- else the inset collapses or
         # crosses over (garbage). Too small for this tool => no tool-path.
@@ -123,19 +146,19 @@ class toolpath_2d_surfacing:
         return cls(line0, line1, radius, safe_z=safe_z, stepover=stepover, incline=incline, direction=direction)
 
     @classmethod
-    def from_mesh_face(cls, mesh, face_id, radius, safe_z=None, stepover=None, flip=False, incline=False, direction=None):
+    def from_mesh_face(cls, mesh, face_id, radius, safe_z=None, stepover=None, flip=False, incline=False, direction=None, start=None):
         """Build a tool-path from the face ``face_id`` you choose on a mesh.
 
-        ``flip``/``incline`` -- see :meth:`from_quad`. Returns ``None`` if that face
-        is not a quad.
+        ``flip``/``incline``/``start`` -- see :meth:`from_quad`. Returns ``None`` if
+        that face is not a quad.
         """
         coords = mesh.face_coordinates(face_id)
         if len(coords) != 4:
             return None
-        return cls.from_quad(coords, radius, safe_z=safe_z, stepover=stepover, flip=flip, incline=incline, direction=direction)
+        return cls.from_quad(coords, radius, safe_z=safe_z, stepover=stepover, flip=flip, incline=incline, direction=direction, start=start)
 
     @classmethod
-    def from_plate(cls, mesh, radius, safe_z=None, stepover=None, top=False, flip=False, incline=False, direction=None):
+    def from_plate(cls, mesh, radius, safe_z=None, stepover=None, top=False, flip=False, incline=False, direction=None, start=None):
         """Build a tool-path from a plate-like cutter's large face.
 
         A plate's two LARGEST faces are its top and bottom (both quads); the thin
@@ -158,7 +181,7 @@ class toolpath_2d_surfacing:
         big = sorted(quads, key=mesh.face_area, reverse=True)[:2]  # top + bottom
         big.sort(key=lambda fk: sum(p[2] for p in mesh.face_coordinates(fk)))  # by Z
         face_id = big[1] if top else big[0]
-        return cls.from_quad(mesh.face_coordinates(face_id), radius, safe_z=safe_z, stepover=stepover, flip=flip, incline=incline, direction=direction)
+        return cls.from_quad(mesh.face_coordinates(face_id), radius, safe_z=safe_z, stepover=stepover, flip=flip, incline=incline, direction=direction, start=start)
 
     # ------------------------------------------------------------------ #
 
