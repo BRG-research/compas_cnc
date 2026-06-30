@@ -41,10 +41,12 @@ GREEN = (0.2, 0.7, 0.3)
 SCALE = 0.1
 XO, YO = 5, 15
 
-RADIUS = 1.5  # tool radius (mm)
+RADIUS = 3.0  # 6mm tool radius (mm) -- surfacing + big ramps (most toolpaths)
 TOOL_DIAMETER = RADIUS * 2
-TOOL = Tool(TOOL_DIAMETER, 30.0, name="flat_3mm")
-STEPOVER = TOOL_DIAMETER / 4  # surfacing pass spacing
+TOOL = Tool(TOOL_DIAMETER, 30.0, name="flat_6mm")
+STEPOVER = TOOL_DIAMETER / 4  # surfacing pass spacing (6mm tool)
+R3 = 1.5  # 3mm tool radius -- drills + narrow slot
+TOOL_3 = Tool(R3 * 2, 30.0, name="flat_3mm")
 DOC = 2.0  # depth of cut per pass (ramp stepdown)
 RECT_OFFSET = 5.0  # grow the top-surface rectangle outwards (mm)
 RECT_Z = 36.0  # top-surface cut height (mm) -- raised 3mm above the 33 model top
@@ -131,33 +133,41 @@ for solid in cuts:
     up = (top - bottom).unitized()
     if up[2] < 0.87:  # not vertical -- drilled in setup B after the roll
         continue
-    drills.append(toolpath_2d_drill(Line(bottom + up * DRILL_LENGTH, bottom), hole_radius, TOOL_DIAMETER, floor=DRILL_FLOOR, safe_z=Z_SAFE))
+    drills.append(toolpath_2d_drill(Line(bottom + up * DRILL_LENGTH, bottom), hole_radius, R3 * 2, floor=DRILL_FLOOR, safe_z=Z_SAFE))
 
 # Zig-zag surfacing: the manual rectangle first, then the up-facing cut plates.
-# START is the outline corner id (0-3) each sweep begins at; None starts at the
-# plate's highest corner (top-down).
+# START is the outline corner id (0-3) each sweep begins at (None = highest corner).
+# FLIP sets the sweep axis: False = passes along the LONG side (longitudinal),
+# True = across. The one-directional cut direction follows the start corner -- the
+# two corners on one side share a direction, the opposite side flips it -- so to
+# keep climb while moving the start, pick a corner on the same side.
 PLATES = [2, 1, 5, 4]
 START = [3, 2, 2, None]
+FLIP = [False, True, True, True]
 plate_surfacing = [surfacing_rect]
-for index, start in zip(PLATES, START):
-    tp = toolpath_2d_surfacing.from_plate(cuts[index], RADIUS, safe_z=Z_SAFE, flip=True, incline=True, stepover=STEPOVER, start=start, direction=DIRECTION)
+for index, start, flip in zip(PLATES, START, FLIP):
+    tp = toolpath_2d_surfacing.from_plate(cuts[index], RADIUS, safe_z=Z_SAFE, flip=flip, incline=True, stepover=STEPOVER, start=start, direction=DIRECTION)
     if tp is not None:
         plate_surfacing.append(tp)
 
 # Ramp the narrow slot (cut_9) down its centreline.
 slot_ramp = toolpath_2d_ramp.from_box(cuts[9], step=DOC, safe_z=Z_SAFE)
 
-# Surfacing first, then the drills and the ramps last.
-toolpaths = [*plate_surfacing, *drills, end_cut, *clip_ramps]
-if slot_ramp is not None:
-    toolpaths.append(slot_ramp)
+# Two tools, one program (one .nc) each -- run the 6mm, swap the bit, run the 3mm:
+#   6mm -> surfacing + big contour ramps ;  3mm -> narrow slot, then the drills LAST.
+# To machine only some, drop items from these lists before merging.
+group_6mm = [*plate_surfacing, end_cut, *clip_ramps]
+group_3mm = ([slot_ramp] if slot_ramp is not None else []) + [*drills]
 
-# `toolpaths` is an ordered list (toolpath_0, toolpath_1, ...). To machine only some,
-# pick them before merging, e.g.  toolpaths = toolpaths[:6]  or  [toolpaths[i] for i in (0, 5, 8)].
-job = toolpath_merge(*toolpaths)
-# Post-process the chosen tool-paths into one Carvera Air program and write the .nc.
-post = Postprocessor(tool=TOOL, feed=300, spindle_speed=10000, coolant="air", material="Wood", program="Column setup A")
-post.write(data_dir / "column_fab_a.nc", job)
+# Combined machining order, also the viewer/animation order (toolpath_0, 1, ...):
+# the 6mm group first, then the 3mm group with the drills at the very end.
+toolpaths = group_6mm + group_3mm
+
+post_6mm = Postprocessor(tool=TOOL, tool_number=1, feed=300, spindle_speed=10000, coolant="air", material="Wood", program="Column setup A (6mm)")
+post_6mm.write(data_dir / "column_fab_a_6mm.nc", toolpath_merge(*group_6mm))
+
+post_3mm = Postprocessor(tool=TOOL_3, tool_number=2, feed=300, spindle_speed=10000, coolant="air", material="Wood", program="Column setup A (3mm)")
+post_3mm.write(data_dir / "column_fab_a_3mm.nc", toolpath_merge(*group_3mm))
 
 # ------------------------------------------------------------------ #
 # Viewer
@@ -175,12 +185,16 @@ stock.add(triangulated(uncut), name=f"{column.name}_uncut", hide_coplanaredges=T
 #     cutters.add(triangulated(solid), name=f"cut_{index}", color=RED, hide_coplanaredges=True)
 
 table_group = scene.add_group("cnc_table")
-for index, curve in enumerate(load_dxf(data_dir / "cnc_table.dxf")):
+for index, curve in enumerate(load_dxf(data_dir / "cnc_table_holes.dxf")):
     table_group.add(curve, name=f"table_{index}", color=BLUE)
 
 clamp_group = scene.add_group("clamp_1")
 clamp_group.add(triangulated(Mesh.from_obj(data_dir / "clamp_1.obj")), name="clamp_1", color=GREEN, hide_coplanaredges=True)
 
 dump_bundle(scene, data_dir / "column_fab_a_rhino.json")
-add_tool_simulation(viewer, [tp.path for tp in toolpaths], radius=RADIUS, height=30.0)
+# Per-tool-path radius so the simulated cutter shows 6mm on the surfacing/ramps and
+# 3mm on the drills/slot as you scrub.
+six = {id(tp) for tp in group_6mm}
+sim_radii = [RADIUS if id(tp) in six else R3 for tp in toolpaths]
+add_tool_simulation(viewer, [tp.path for tp in toolpaths], radius=sim_radii, height=30.0)
 viewer.show()
