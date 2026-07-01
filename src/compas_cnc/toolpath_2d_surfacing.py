@@ -51,11 +51,19 @@ class toolpath_2d_surfacing:
         rectangle is a pocket wall) and the zig-zag goes one-directional (every pass
         cut the same way, lift + rapid between). ``None`` (default) is the faster
         bidirectional zig-zag, fine for soft materials.
+    contour : bool, optional
+        Add the finishing lap around the full inset perimeter after the zig-zag.
+        ``True`` (default) walks the boundary and returns to the start corner before
+        retracting. ``False`` skips that lap and retracts STRAIGHT UP from wherever the
+        last cutting pass ended -- use it where the perimeter lap would otherwise swing
+        the tool around into neighbouring material.
 
     Attributes
     ----------
     path : :class:`compas.geometry.Polyline`
-        The full tool-centre path: plunge, zigzag, contour, retract.
+        The full tool-centre path: plunge, zigzag, then either the finishing contour
+        and a retract at the start corner (``contour=True``) or a straight retract up
+        from the last cutting point (``contour=False``).
     zigzag, contour : :class:`compas.geometry.Polyline`
         The cutting zigzag and the finishing perimeter loop, separately.
     passes : int
@@ -63,7 +71,7 @@ class toolpath_2d_surfacing:
     safe_z : float
     """
 
-    def __init__(self, line0, line1, radius, safe_z=None, stepover=None, incline=False, direction=None):
+    def __init__(self, line0, line1, radius, safe_z=None, stepover=None, incline=False, direction=None, contour=True):
         self.line0 = line0
         self.line1 = line1
         self.radius = radius
@@ -72,6 +80,11 @@ class toolpath_2d_surfacing:
             self.stepover *= 0.5  # tilted face: halve the spacing so tool passes overlap >= half (scallop control)
         self._safe_z_request = safe_z
         self.incline = incline
+        # Finishing contour: the lap around the full inset perimeter after the zig-zag.
+        # With it off, the path skips that lap and retracts STRAIGHT UP from wherever the
+        # last cutting pass ended (no walk back to the start corner) -- use it where the
+        # perimeter lap would swing the tool around into neighbouring material.
+        self.contour_pass = bool(contour)
         if direction not in (None, "climb", "conventional"):
             raise ValueError("direction must be None, 'climb', or 'conventional'.")
         self.direction = direction
@@ -85,7 +98,7 @@ class toolpath_2d_surfacing:
     # ------------------------------------------------------------------ #
 
     @classmethod
-    def from_quad(cls, points, radius, safe_z=None, stepover=None, flip=False, incline=False, direction=None, start=None):
+    def from_quad(cls, points, radius, safe_z=None, stepover=None, flip=False, incline=False, direction=None, start=None, contour=True):
         """Build a tool-path that fills a 4-corner face.
 
         ``points`` are the face's 4 corners in order -- as an open list/polyline of
@@ -143,22 +156,22 @@ class toolpath_2d_surfacing:
         gap = (line1.start - line0.start).length
         if min(line0.length, line1.length) <= 2 * radius or gap <= 2 * radius:
             return None
-        return cls(line0, line1, radius, safe_z=safe_z, stepover=stepover, incline=incline, direction=direction)
+        return cls(line0, line1, radius, safe_z=safe_z, stepover=stepover, incline=incline, direction=direction, contour=contour)
 
     @classmethod
-    def from_mesh_face(cls, mesh, face_id, radius, safe_z=None, stepover=None, flip=False, incline=False, direction=None, start=None):
+    def from_mesh_face(cls, mesh, face_id, radius, safe_z=None, stepover=None, flip=False, incline=False, direction=None, start=None, contour=True):
         """Build a tool-path from the face ``face_id`` you choose on a mesh.
 
-        ``flip``/``incline``/``start`` -- see :meth:`from_quad`. Returns ``None`` if
-        that face is not a quad.
+        ``flip``/``incline``/``start``/``contour`` -- see :meth:`from_quad`. Returns
+        ``None`` if that face is not a quad.
         """
         coords = mesh.face_coordinates(face_id)
         if len(coords) != 4:
             return None
-        return cls.from_quad(coords, radius, safe_z=safe_z, stepover=stepover, flip=flip, incline=incline, direction=direction, start=start)
+        return cls.from_quad(coords, radius, safe_z=safe_z, stepover=stepover, flip=flip, incline=incline, direction=direction, start=start, contour=contour)
 
     @classmethod
-    def from_plate(cls, mesh, radius, safe_z=None, stepover=None, top=False, flip=False, incline=False, direction=None, start=None):
+    def from_plate(cls, mesh, radius, safe_z=None, stepover=None, top=False, flip=False, incline=False, direction=None, start=None, contour=True):
         """Build a tool-path from a plate-like cutter's large face.
 
         A plate's two LARGEST faces are its top and bottom (both quads); the thin
@@ -181,7 +194,7 @@ class toolpath_2d_surfacing:
         big = sorted(quads, key=mesh.face_area, reverse=True)[:2]  # top + bottom
         big.sort(key=lambda fk: sum(p[2] for p in mesh.face_coordinates(fk)))  # by Z
         face_id = big[1] if top else big[0]
-        return cls.from_quad(mesh.face_coordinates(face_id), radius, safe_z=safe_z, stepover=stepover, flip=flip, incline=incline, direction=direction, start=start)
+        return cls.from_quad(mesh.face_coordinates(face_id), radius, safe_z=safe_z, stepover=stepover, flip=flip, incline=incline, direction=direction, start=start, contour=contour)
 
     # ------------------------------------------------------------------ #
 
@@ -257,9 +270,15 @@ class toolpath_2d_surfacing:
                     nxt = zpts[i + 2]
                     body.append(Point(pb[0], pb[1], self.safe_z))  # retract
                     body.append(Point(nxt[0], nxt[1], self.safe_z))  # rapid to the next pass
-            self.path = Polyline(body + list(contour) + [lead_out])
+            cut = body
         else:
-            self.path = Polyline([lead_in] + zpts + list(contour) + [lead_out])
+            cut = [lead_in] + list(zpts)
+        if self.contour_pass:
+            self.path = Polyline(cut + list(contour) + [lead_out])
+        else:
+            # No finishing lap: retract STRAIGHT UP from the last cutting point.
+            tail = cut[-1]
+            self.path = Polyline(cut + [Point(tail[0], tail[1], self.safe_z)])
 
         # Flat tool on a TILTED face: the tool-path is the tool CENTRE, but a flat
         # bit only touches an inclined plane at its UP-SLOPE rim -- so if the centre

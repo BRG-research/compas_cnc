@@ -51,7 +51,8 @@ DOC = 2.0  # depth of cut per pass (ramp stepdown)
 RECT_OFFSET = 5.0  # grow the top-surface rectangle outwards (mm)
 RECT_Z = 36.0  # top-surface cut height (mm) -- raised 3mm above the 33 model top
 DIRECTION = "climb"  # one-directional milling following the CW (M3) cutter; None = faster bidirectional zig-zag
-OFFSET = 0.0  # contour offset from the silhouette (default RADIUS to ride outside; 0 = on the edge)
+OFFSET = RADIUS  # grow the silhouette outward by the tool radius (Clipper2) so the ramps ride the cut side; the ramps then take offset=0 (0 here = on the edge). Doing the offset on the CLOSED contour avoids the naive single-sided open-path offset, which self-intersects at the boolean-difference corners.
+ARC_TOL = 0.01  # chord tolerance (mm) for the rounded tool-radius corners of the silhouette offset -- SMALLER = smoother round corners (more points). 0.2 looks faceted; 0.01 is a clean round. This is the only knob for corner smoothness (clip + the ramp faithfully keep whatever points the offset emits).
 Z_SAFE = 60.0
 DRILL_LENGTH = 30.0
 DRILL_FLOOR = -1.0
@@ -78,9 +79,42 @@ def silhouette(geometry, offset):
 
     ``outline`` only unions the faces when grown by a positive distance, so grow
     by the tool RADIUS and then offset the result back to the requested distance.
+    ``ARC_TOL`` is the CHORD tolerance for the rounded (tool-radius) corners: the tool
+    centre rides an arc there, and since the post emits only straight G1 moves the arc
+    is linearised into segments deviating at most ``ARC_TOL`` from the true arc. This is
+    the ONLY control over corner smoothness -- clip() and the ramp preserve exactly the
+    points the offset emits, so a coarse value here is what makes corners look faceted.
     """
-    grown = outline(geometry, RADIUS, z=0.0)
+    grown = outline(geometry, RADIUS, z=0.0, arc_tolerance=ARC_TOL)
     return offset_polyline(grown[0], offset - RADIUS, join_type="miter")
+
+
+def trim_sweep_high_x(line0, line1, distance):
+    """Pull a surfacing sweep's +X (right-hand) end in by ``distance`` mm.
+
+    Used to keep the up-facing plate cuts within the machine's X travel. A sweep
+    reaches into +X either along one whole rail (passes step across into +X) or at
+    the rails' shared end (passes run along +X); this detects which and shortens the
+    rails there, keeping their orientation so the climb/conventional winding is
+    unchanged. Returns the trimmed ``(line0, line1)`` to rebuild the tool-path from.
+    """
+    ends = {"0s": line0.start, "0e": line0.end, "1s": line1.start, "1e": line1.end}
+    hi = set(sorted(ends, key=lambda k: ends[k][0], reverse=True)[:2])
+    if hi in ({"0s", "1s"}, {"0e", "1e"}):  # a rail END is the +X side -> shorten both rails there
+        at_start = hi == {"0s", "1s"}
+
+        def shorten(line):
+            u = line.vector.unitized()
+            return Line(line.start + u * distance, line.end) if at_start else Line(line.start, line.end - u * distance)
+
+        return shorten(line0), shorten(line1)
+    # a whole rail is the +X side -> slide it across toward the other rail
+    far, near = (line1, line0) if ends["1s"][0] + ends["1e"][0] > ends["0s"][0] + ends["0e"][0] else (line0, line1)
+    slid = Line(
+        far.start + (near.start - far.start).unitized() * distance,
+        far.end + (near.end - far.end).unitized() * distance,
+    )
+    return (slid, line1) if far is line0 else (line0, slid)
 
 
 model: Model = compas.json_load(data_dir / "cantilevers_model.json")
@@ -99,10 +133,11 @@ top_z, beam_height = max(beam_z), max(beam_z) - min(beam_z)
 
 profile = silhouette(final_geometry, OFFSET)
 
-# End cut: ramp the silhouette cap at the start of the beam straight down. Like
-# the clip ramps it follows the contour, so the path is offset by the tool radius
-# to ride on the cut side (the slot ramp below stays on its centreline).
-end_cut = toolpath_2d_ramp.from_outline(profile[0], depth=beam_height, top_z=top_z, end="start", cap=END_CAP, step=DOC, safe_z=Z_SAFE, offset=-RADIUS)
+# End cut: ramp the silhouette cap at the start of the beam straight down. The
+# profile is already grown outward by the tool radius (OFFSET=RADIUS), so it rides
+# the cut side with offset=0 -- no per-ramp offset (the slot ramp below stays on its
+# centreline).
+end_cut = toolpath_2d_ramp.from_outline(profile[0], depth=beam_height, top_z=top_z, end="start", cap=END_CAP, step=DOC, safe_z=Z_SAFE, offset=0.0)
 
 # Surfacing of a manual rectangle, and descending ramps along the silhouette
 # clipped to that rectangle.
@@ -113,8 +148,13 @@ o = RECT_OFFSET
 surf_rect = Polyline([[-o, -o, RECT_Z], [90 + o, -o, RECT_Z], [90 + o, 44 + o, RECT_Z], [-o, 44 + o, RECT_Z], [-o, -o, RECT_Z]])
 surf_rect.transform(Translation.from_vector([285 - 85 + XO, YO, 0]))
 surfacing_rect = toolpath_2d_surfacing.from_quad(surf_rect, RADIUS, safe_z=Z_SAFE, stepover=STEPOVER, direction=DIRECTION)
+# Column-head rectangle: a second flat surfacing pass, swept longitudinally (along
+# its long X side) and started at its first control point so the tool clears the
+# head from that corner.
+head_rect = Polyline([[220.545, 68.0, 11.0], [290.0, 68.0, 11.0], [290.0, 48.0, 11.0], [220.545, 48.0, 11.0], [220.545, 68.0, 11.0]])
+head_surfacing = toolpath_2d_surfacing.from_quad(head_rect, RADIUS, safe_z=Z_SAFE, stepover=STEPOVER, direction=DIRECTION, start=0)
 clip_ramps = [
-    toolpath_2d_ramp(part.transformed(Translation.from_vector([0, 0, top_z])), Vector(0, 0, -beam_height), step=DOC, safe_z=Z_SAFE, offset=-RADIUS)
+    toolpath_2d_ramp(part.transformed(Translation.from_vector([0, 0, top_z])), Vector(0, 0, -beam_height), step=DOC, safe_z=Z_SAFE, offset=0.0)
     for part in clip(profile[0], rectangle, z=0.0)
 ]
 
@@ -144,11 +184,17 @@ for solid in cuts:
 PLATES = [2, 1, 5, 4]
 START = [3, 2, 2, None]
 FLIP = [False, True, True, True]
-plate_surfacing = [surfacing_rect]
-for index, start, flip in zip(PLATES, START, FLIP):
-    tp = toolpath_2d_surfacing.from_plate(cuts[index], RADIUS, safe_z=Z_SAFE, flip=flip, incline=True, stepover=STEPOVER, start=start, direction=DIRECTION)
-    if tp is not None:
-        plate_surfacing.append(tp)
+TRIM = [10.0, 10.0, 0.0, 0.0]  # shorten the sweep's +X (right) end by this many mm -- cuts[2]/cuts[1] otherwise reach past the CNC X travel
+CONTOUR = [True, True, True, False]  # cuts[4] (toolpath_5): skip the finishing perimeter lap and retract straight up at the end
+plate_surfacing = [surfacing_rect, head_surfacing]
+for index, start, flip, trim, contour in zip(PLATES, START, FLIP, TRIM, CONTOUR):
+    tp = toolpath_2d_surfacing.from_plate(cuts[index], RADIUS, safe_z=Z_SAFE, flip=flip, incline=True, stepover=STEPOVER, start=start, direction=DIRECTION, contour=contour)
+    if tp is None:
+        continue
+    if trim:  # rebuild the sweep from rails shortened at the right end so it stays inside the machine
+        line0, line1 = trim_sweep_high_x(tp.line0, tp.line1, trim)
+        tp = toolpath_2d_surfacing(line0, line1, RADIUS, safe_z=Z_SAFE, stepover=STEPOVER, incline=True, direction=DIRECTION, contour=contour)
+    plate_surfacing.append(tp)
 
 # Ramp the narrow slot (cut_9) down its centreline.
 slot_ramp = toolpath_2d_ramp.from_box(cuts[9], step=DOC, safe_z=Z_SAFE)
