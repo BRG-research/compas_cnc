@@ -107,6 +107,19 @@ class toolpath_2d_ramp:
         For a closed loop with ``direction`` set: ``True`` if the loop is a pocket /
         outer wall (cleared region inside), ``False`` if it profiles an island / part
         outline (kept material inside). Sets which winding is climb. Defaults to ``True``.
+    tabs : iterable, optional
+        Hold-down TAB markers, each an ``(x, y[, z])`` point where the cut must NOT go
+        through -- an uncut bridge is left so the part stays fixed to the stock (like a
+        standard CNC tab). Only XY is used: each marker is snapped to the nearest point
+        on the ramp centre-path, and a marker farther than ``tab_width`` from the path
+        (belonging to another contour) is ignored -- so every marker may be passed to
+        every ramp. Defaults to ``None`` (no tabs).
+    tab_height : float, optional
+        Bridge height: how far ABOVE the descent FLOOR (the deepest cut point) the tool
+        is held over each tab, i.e. the thickness of uncut stock left. Defaults to 0.5.
+    tab_width : float, optional
+        Flat span of each tab along the path; the tab region is a disk of radius
+        ``tab_width / 2`` about the snapped marker. Defaults to 3.0.
 
     Attributes
     ----------
@@ -116,6 +129,8 @@ class toolpath_2d_ramp:
         The descending sweeps (and floor pass), without the lead-in/out.
     notches : list[tuple[:class:`compas.geometry.Point`, :class:`compas.geometry.Point`]]
         ``(corner, tip)`` pairs at the mouth, one per notched inside corner.
+    tabs : list[:class:`compas.geometry.Point`]
+        Bridge-centre points (at the tab-top Z), one per applied hold-down tab.
     passes : int
     step : float
     ramp_angle : float
@@ -124,7 +139,7 @@ class toolpath_2d_ramp:
     offset : float
     """
 
-    def __init__(self, path, descent, step=None, ramp_angle=None, bottom_pass=True, safe_z=None, offset=0.0, notch=0.0, notch_flip=False, direction=None, pocket=True):
+    def __init__(self, path, descent, step=None, ramp_angle=None, bottom_pass=True, safe_z=None, offset=0.0, notch=0.0, notch_flip=False, direction=None, pocket=True, tabs=None, tab_height=0.5, tab_width=3.0):
         pts = [Point(*p) for p in path]
         if len(pts) < 2:
             raise ValueError("ramp path needs at least 2 points.")
@@ -161,6 +176,14 @@ class toolpath_2d_ramp:
         self.notch = float(notch)
         self.notch_flip = bool(notch_flip)
         self.notches = []
+        # HOLD-DOWN TABS: where the cut must stop short of full depth, leaving an
+        # uncut bridge so the part stays fixed to the stock. `tabs` are marker XY
+        # points (the ramp snaps each onto its own centre-path); `tab_height` is how
+        # far ABOVE the descent floor the bridge top sits; `tab_width` is its span.
+        self._tabs = [Point(*t) for t in tabs] if tabs else []
+        self.tab_height = float(tab_height)
+        self.tab_width = float(tab_width)
+        self.tabs = []
         self._build()
 
     # ------------------------------------------------------------------ #
@@ -370,6 +393,102 @@ class toolpath_2d_ramp:
             self.notches.append((Point(*V), Point(V[0] + vec[0], V[1] + vec[1], V[2] + vec[2])))
         return out
 
+    def _apply_tabs(self, points):
+        """Lift the cut over hold-down TABS so uncut bridges hold the part down.
+
+        Each marker in :attr:`_tabs` is snapped to the nearest point ON the ramp
+        centre-path (in XY) -- the markers come from the un-offset contour, so a raw
+        disk about them could miss the offset path. A marker whose nearest-path
+        distance exceeds ``tab_width`` (belongs to another contour) is dropped, so
+        the caller may pass every marker to every ramp. Around each snapped centre a
+        disk of radius ``tab_width / 2`` is the tab region. Each tab is an ISOLATED
+        up-and-down: the tool walls straight UP to ``floor + tab_height`` where it
+        ENTERS a disk, rides flat across the bridge, walls straight DOWN where it
+        LEAVES, and returns to the cut floor -- so between two tabs the tool drops
+        back down and keeps cutting, it does not stay lifted. Because EVERY pass is
+        clamped (not just the deepest), no pass cuts below a bridge. Populates
+        :attr:`tabs` with the bridge-centre points; returns the (longer) point list.
+        """
+        self.tabs = []
+        if not self._tabs:
+            return points
+        r = 0.5 * self.tab_width
+        snap = self.tab_width
+        disks = []  # (cx, cy) bridge centres snapped onto the path
+        for t in self._tabs:
+            tx, ty = float(t[0]), float(t[1])
+            best = None
+            for i in range(len(points) - 1):
+                ax, ay = points[i][0], points[i][1]
+                dx, dy = points[i + 1][0] - ax, points[i + 1][1] - ay
+                ll = dx * dx + dy * dy
+                if ll < 1e-18:
+                    px, py = ax, ay
+                else:
+                    u = max(0.0, min(1.0, ((tx - ax) * dx + (ty - ay) * dy) / ll))
+                    px, py = ax + u * dx, ay + u * dy
+                d = math.hypot(tx - px, ty - py)
+                if best is None or d < best[0]:
+                    best = (d, px, py)
+            if best is not None and best[0] <= snap:
+                disks.append((best[1], best[2]))
+        if not disks:
+            return points
+
+        floor_z = min(p[2] for p in points)
+        tab_top_z = floor_z + self.tab_height
+
+        def inside(x, y):
+            for cx, cy in disks:
+                if math.hypot(x - cx, y - cy) <= r + 1e-9:
+                    return True
+            return False
+
+        # Walk each segment, inserting a vertical wall UP where it enters a disk and
+        # DOWN where it leaves, so every tab is a self-contained lift that returns to
+        # the cut floor. A vertex inside a disk is raised (deeper Z only -- passes
+        # already above the bridge are left flat).
+        out = []
+        for i in range(len(points) - 1):
+            a, b = points[i], points[i + 1]
+            ax, ay, az = a[0], a[1], a[2]
+            dx, dy, dz = b[0] - ax, b[1] - ay, b[2] - az
+            out.append(Point(ax, ay, max(az, tab_top_z) if inside(ax, ay) else az))
+            aa = dx * dx + dy * dy
+            if aa < 1e-18:
+                continue
+            crossings = []
+            for cx, cy in disks:
+                fx, fy = ax - cx, ay - cy
+                bb = 2.0 * (fx * dx + fy * dy)
+                cc = fx * fx + fy * fy - r * r
+                disc = bb * bb - 4.0 * aa * cc
+                if disc <= 0.0:
+                    continue
+                sq = math.sqrt(disc)
+                for tt in ((-bb - sq) / (2.0 * aa), (-bb + sq) / (2.0 * aa)):
+                    if 1e-9 < tt < 1.0 - 1e-9:
+                        crossings.append(tt)
+            for tt in sorted(crossings):
+                xt, yt, zt = ax + tt * dx, ay + tt * dy, az + tt * dz
+                eps = 1e-6
+                before = inside(ax + (tt - eps) * dx, ay + (tt - eps) * dy)
+                after = inside(ax + (tt + eps) * dx, ay + (tt + eps) * dy)
+                if (not before) and after:  # entering a tab -> wall UP onto the bridge
+                    out.append(Point(xt, yt, zt))
+                    if zt < tab_top_z:
+                        out.append(Point(xt, yt, tab_top_z))
+                elif before and (not after):  # leaving a tab -> wall DOWN to the floor
+                    if zt < tab_top_z:
+                        out.append(Point(xt, yt, tab_top_z))
+                    out.append(Point(xt, yt, zt))
+                else:  # boundary between overlapping disks -- stay on the bridge
+                    out.append(Point(xt, yt, max(zt, tab_top_z)))
+        lp = points[-1]
+        out.append(Point(lp[0], lp[1], max(lp[2], tab_top_z) if inside(lp[0], lp[1]) else lp[2]))
+        self.tabs = [Point(cx, cy, tab_top_z) for cx, cy in disks]
+        return out
+
     def _build(self):
         pts = self._pts
         seglen = [pts[i].distance_to_point(pts[i + 1]) for i in range(len(pts) - 1)]
@@ -441,6 +560,8 @@ class toolpath_2d_ramp:
             for pos, (_arc, p, vidx) in enumerate(seq):
                 emit(points, p + self.descent, vidx, pos < len(seq) - 1)
 
+        # HOLD-DOWN TABS: lift the cut over each bridge so the part stays fixed.
+        points = self._apply_tabs(points)
         self.ramp = Polyline(points)
 
         # Vertical plunge-in / retract-out, kept >= MIN_CLEARANCE above the mouth.

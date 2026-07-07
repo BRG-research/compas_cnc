@@ -126,8 +126,6 @@ temp/**
 
 src/.build/**
 
-data/
-
 *.tar.gz
 
 *.pickle
