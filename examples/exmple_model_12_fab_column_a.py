@@ -13,7 +13,6 @@ from compas.geometry import Vector
 from compas_model.models import Model
 from compas_tf.column import ColumnElement
 from compas_tf.viewer import TeeScene
-from compas_tf.viewer import add_tool_simulation
 from compas_tf.viewer import dump_bundle
 from compas_tf.viewer import make_viewer
 from compas_tf.viewer import triangulated
@@ -28,6 +27,7 @@ from compas_cnc import toolpath_2d_surfacing
 from compas_cnc import toolpath_merge
 from compas_cnc.dxf import load_dxf
 from compas_cnc.tools import Tool
+from compas_cnc.tools import add_toolpath_slider
 
 # Setup A: the column laid flat at 1:10, machining everything reachable straight
 # down -- the silhouette end cut, the vertical drills and the up-facing cuts. The
@@ -37,6 +37,8 @@ GREY = (0.85, 0.85, 0.85)
 RED = (0.9, 0.2, 0.2)
 BLUE = (0.2, 0.4, 0.9)
 GREEN = (0.2, 0.7, 0.3)
+ORANGE = (0.95, 0.55, 0.10)  # 6mm tool-paths
+PURPLE = (0.60, 0.20, 0.90)  # 3mm tool-paths
 
 SCALE = 0.1
 XO, YO = 5, 15
@@ -49,7 +51,7 @@ R3 = 1.5  # 3mm tool radius -- drills + narrow slot
 TOOL_3 = Tool(R3 * 2, 30.0, name="flat_3mm")
 DOC = 2.0  # depth of cut per pass (ramp stepdown)
 RECT_OFFSET = 5.0  # grow the top-surface rectangle outwards (mm)
-RECT_Z = 36.0  # top-surface cut height (mm) -- raised 3mm above the 33 model top
+RECT_Z = 35.0  # top-surface cut height (mm) -- raised 3mm above the 33 model top
 DIRECTION = "climb"  # one-directional milling following the CW (M3) cutter; None = faster bidirectional zig-zag
 OFFSET = RADIUS  # grow the silhouette outward by the tool radius (Clipper2) so the ramps ride the cut side; the ramps then take offset=0 (0 here = on the edge). Doing the offset on the CLOSED contour avoids the naive single-sided open-path offset, which self-intersects at the boolean-difference corners.
 ARC_TOL = 0.01  # chord tolerance (mm) for the rounded tool-radius corners of the silhouette offset -- SMALLER = smoother round corners (more points). 0.2 looks faceted; 0.01 is a clean round. This is the only knob for corner smoothness (clip + the ramp faithfully keep whatever points the offset emits).
@@ -117,6 +119,21 @@ def trim_sweep_high_x(line0, line1, distance):
     return (slid, line1) if far is line0 else (line0, slid)
 
 
+def extend_sweep_y(line0, line1, distance):
+    """Lengthen both rails by ``distance`` mm at their +Y (far) end, so the sweep
+    reaches further along Y. Extends the higher-Y endpoint of each rail along the rail
+    direction (keeping its Z, so the inclined plane just continues), leaving the sweep
+    orientation -- and so the climb winding -- unchanged.
+    """
+    def grow(line):
+        u = line.vector.unitized()
+        if line.end[1] >= line.start[1]:  # END is the +Y end -> push it out
+            return Line(line.start, line.end + u * distance)
+        return Line(line.start - u * distance, line.end)
+
+    return grow(line0), grow(line1)
+
+
 model: Model = compas.json_load(data_dir / "cantilevers_model.json")
 column: ColumnElement = model.find_element_with_name("column_0")
 
@@ -151,7 +168,8 @@ surfacing_rect = toolpath_2d_surfacing.from_quad(surf_rect, RADIUS, safe_z=Z_SAF
 # Column-head rectangle: a second flat surfacing pass, swept longitudinally (along
 # its long X side) and started at its first control point so the tool clears the
 # head from that corner.
-head_rect = Polyline([[220.545, 68.0, 11.0], [290.0, 68.0, 11.0], [290.0, 48.0, 11.0], [220.545, 48.0, 11.0], [220.545, 68.0, 11.0]])
+
+head_rect = Polyline([[210.653113, 69.763286, 18], [294.945943, 57.266757, 18], [294.945943, 37.266757, 18], [210.653113, 49.763286, 18], [210.653113, 69.763286, 18]])
 head_surfacing = toolpath_2d_surfacing.from_quad(head_rect, RADIUS, safe_z=Z_SAFE, stepover=STEPOVER, direction=DIRECTION, start=0)
 clip_ramps = [
     toolpath_2d_ramp(part.transformed(Translation.from_vector([0, 0, top_z])), Vector(0, 0, -beam_height), step=DOC, safe_z=Z_SAFE, offset=0.0)
@@ -186,13 +204,18 @@ START = [3, 2, 2, None]
 FLIP = [False, True, True, True]
 TRIM = [10.0, 10.0, 0.0, 0.0]  # shorten the sweep's +X (right) end by this many mm -- cuts[2]/cuts[1] otherwise reach past the CNC X travel
 CONTOUR = [True, True, True, False]  # cuts[4] (toolpath_5): skip the finishing perimeter lap and retract straight up at the end
+EXTEND_Y = [15.0, 0.0, 0.0, 0.0]  # cuts[2] (toolpath_2): lengthen the sweep's +Y (far) end so it covers the top of the plate (part reaches Y~47, the raw sweep fell short)
 plate_surfacing = [surfacing_rect, head_surfacing]
-for index, start, flip, trim, contour in zip(PLATES, START, FLIP, TRIM, CONTOUR):
+for index, start, flip, trim, contour, extend_y in zip(PLATES, START, FLIP, TRIM, CONTOUR, EXTEND_Y):
     tp = toolpath_2d_surfacing.from_plate(cuts[index], RADIUS, safe_z=Z_SAFE, flip=flip, incline=True, stepover=STEPOVER, start=start, direction=DIRECTION, contour=contour)
     if tp is None:
         continue
-    if trim:  # rebuild the sweep from rails shortened at the right end so it stays inside the machine
-        line0, line1 = trim_sweep_high_x(tp.line0, tp.line1, trim)
+    line0, line1 = tp.line0, tp.line1
+    if trim:  # shorten the right end so it stays inside the machine
+        line0, line1 = trim_sweep_high_x(line0, line1, trim)
+    if extend_y:  # lengthen the far (+Y) end to cover more of the plate
+        line0, line1 = extend_sweep_y(line0, line1, extend_y)
+    if trim or extend_y:  # rebuild from the adjusted rails
         tp = toolpath_2d_surfacing(line0, line1, RADIUS, safe_z=Z_SAFE, stepover=STEPOVER, incline=True, direction=DIRECTION, contour=contour)
     plate_surfacing.append(tp)
 
@@ -237,10 +260,22 @@ for index, curve in enumerate(load_dxf(data_dir / "cnc_table_holes.dxf")):
 clamp_group = scene.add_group("clamp_1")
 clamp_group.add(triangulated(Mesh.from_obj(data_dir / "clamp_1.obj")), name="clamp_1", color=GREEN, hide_coplanaredges=True)
 
-dump_bundle(scene, data_dir / "column_fab_a_rhino.json")
-# Per-tool-path radius so the simulated cutter shows 6mm on the surfacing/ramps and
-# 3mm on the drills/slot as you scrub.
+# The tool-centre paths as polylines -- orange for the 6mm group, purple for the 3mm.
+# Keep the LIVE objects so the selected one can turn red; record each into the bundle.
+paths = scene.add_group("toolpaths")
 six = {id(tp) for tp in group_6mm}
-sim_radii = [RADIUS if id(tp) in six else R3 for tp in toolpaths]
-add_tool_simulation(viewer, [tp.path for tp in toolpaths], radius=sim_radii, height=30.0)
+path_objs, path_colors = [], []
+for index, tp in enumerate(toolpaths):
+    color = ORANGE if id(tp) in six else PURPLE
+    path_objs.append(paths._live.add(tp.path, name=f"path_{index}", color=color))
+    paths._rec.add(tp.path, name=f"path_{index}", color=color)
+    path_colors.append(color)
+
+dump_bundle(scene, data_dir / "column_fab_a_rhino.json")
+
+# Two sliders (live viewer only): 'toolpath' selects a path (turning it RED), 'position'
+# scrubs the cutter along it -- 6mm on the surfacing/ramps, 3mm on the slot/drills.
+sim_entries = [(TOOL, tp.path) for tp in group_6mm] + [(TOOL_3, tp.path) for tp in group_3mm]
+if hasattr(viewer, "ui"):
+    add_toolpath_slider(viewer, sim_entries, path_objs, path_colors)
 viewer.show()

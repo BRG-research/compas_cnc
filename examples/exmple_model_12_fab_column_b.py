@@ -12,7 +12,6 @@ from compas.geometry import Transformation
 from compas_model.models import Model
 from compas_tf.column import ColumnElement
 from compas_tf.viewer import TeeScene
-from compas_tf.viewer import add_tool_simulation
 from compas_tf.viewer import dump_bundle
 from compas_tf.viewer import make_viewer
 from compas_tf.viewer import triangulated
@@ -23,6 +22,7 @@ from compas_cnc import toolpath_2d_ramp
 from compas_cnc import toolpath_merge
 from compas_cnc.dxf import load_dxf
 from compas_cnc.tools import Tool
+from compas_cnc.tools import add_toolpath_slider
 
 # Setup B: the same column rolled 90 degrees about its long axis (pivoting on the
 # base centre so the base stays on the table and the head swings round), then
@@ -33,6 +33,7 @@ GREY = (0.85, 0.85, 0.85)
 RED = (0.9, 0.2, 0.2)
 BLUE = (0.2, 0.4, 0.9)
 GREEN = (0.2, 0.7, 0.3)
+PURPLE = (0.60, 0.20, 0.90)  # 3mm tool-paths
 
 SCALE = 0.1
 XO, YO = 5, 15
@@ -131,6 +132,20 @@ for index, curve in enumerate(load_dxf(data_dir / "cnc_table.dxf")):
 clamp_group = scene.add_group("clamp_1")
 clamp_group.add(triangulated(Mesh.from_obj(data_dir / "clamp_1.obj")), name="clamp_1", color=GREEN, hide_coplanaredges=True)
 
+# The tool-centre paths as polylines; keep the LIVE objects so the selected one can
+# turn red, and record each into the bundle.
+paths = scene.add_group("toolpaths")
+path_objs, path_colors = [], []
+for index, tp in enumerate(toolpaths):
+    path_objs.append(paths._live.add(tp.path, name=f"path_{index}", color=PURPLE))
+    paths._rec.add(tp.path, name=f"path_{index}", color=PURPLE)
+    path_colors.append(PURPLE)
+
 dump_bundle(scene, data_dir / "column_fab_b_rhino.json")
-add_tool_simulation(viewer, [tp.path for tp in toolpaths], radius=RADIUS, height=30.0)
+
+# Two sliders (live viewer only): 'toolpath' selects a path (turning it RED),
+# 'position' scrubs the 3mm cutter along it.
+sim_entries = [(TOOL, tp.path) for tp in toolpaths]
+if hasattr(viewer, "ui"):
+    add_toolpath_slider(viewer, sim_entries, path_objs, path_colors)
 viewer.show()

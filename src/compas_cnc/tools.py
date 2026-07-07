@@ -108,6 +108,66 @@ def add_tool_slider(viewer, tool, path, title="t", **style):
     return obj
 
 
+def add_toolpath_slider(viewer, entries, path_objs=None, path_colors=None, red=(0.90, 0.10, 0.10)):
+    """Two side-dock sliders on a LIVE ``viewer``: 'toolpath' selects a path by id
+    (0..N-1) and 'position' scrubs 0..100 % along it.
+
+    ``entries`` is a list of ``(tool, path)`` pairs. The cutter shown swaps to the
+    selected path's ``tool`` -- so a 6mm path shows the 6mm cutter, a 3mm path the 3mm
+    one -- and is dropped onto the scrub position. If ``path_objs`` (the live polyline
+    scene objects, in the same order as ``entries``) and ``path_colors`` (their base
+    RGB tuples) are given, the selected path's polyline is recoloured ``red`` and the
+    rest restored -- a moving red highlight of the active tool-path. Call before
+    ``viewer.show()``; a recorder/watch viewer has no ``ui`` so guard with
+    ``if hasattr(viewer, "ui")``.
+    """
+    from compas.colors import Color
+    from compas.geometry import Translation
+    from compas_viewer.components import Slider
+
+    red = Color(*red)
+
+    # One scene solid per DISTINCT tool; only the selected path's tool is shown.
+    solids = {}
+    for tool, _path in entries:
+        if id(tool) not in solids:
+            obj = viewer.scene.add(tool.solid(), name=tool.name)
+            obj.set_visible(False)
+            solids[id(tool)] = obj
+
+    state = {"idx": 0, "t": 0.0, "hl": -1}
+
+    def refresh():
+        idx = max(0, min(len(entries) - 1, int(round(state["idx"]))))
+        # Recolour only the two paths whose colour changes: revert the previously
+        # reddened one, redden the new one. Touching two objects instead of all N is
+        # what keeps scrubbing responsive (rebuilding every buffer each tick crawls),
+        # and moving 'position' -- which never changes idx -- skips this block entirely.
+        if path_objs and idx != state["hl"]:
+            prev = state["hl"]
+            if 0 <= prev < len(path_objs):
+                path_objs[prev].linecolor = Color(*path_colors[prev])
+                path_objs[prev].update(update_data=True)
+            path_objs[idx].linecolor = red
+            path_objs[idx].update(update_data=True)
+            state["hl"] = idx
+        # Show only the selected path's tool, moved to its scrub position.
+        tool, path = entries[idx]
+        for key, obj in solids.items():
+            active = key == id(tool)
+            obj.set_visible(active)
+            if active:
+                obj.transformation = Translation.from_vector(list(point_at(path, state["t"])))
+            obj.update()
+        viewer.renderer.update()
+
+    if len(entries) > 1:
+        viewer.ui.sidedock.add(Slider(title="toolpath", value=0, min_val=0, max_val=len(entries) - 1, step=1, action=lambda _c, v: (state.update(idx=v), refresh())))
+    viewer.ui.sidedock.add(Slider(title="position", value=0, min_val=0, max_val=100, step=0.1, action=lambda _c, v: (state.update(t=v / 100.0), refresh())))
+    viewer.ui.sidedock.show = True
+    refresh()
+
+
 FLAT_3MM = Tool(3.0, 30.0, name="flat_3mm")
 FLAT_3_175MM = Tool(3.175, 19.0, name="flat_3.175mm")
 VBIT_3_175MM = Tool(3.175, 19.0, cone_height=3.175, name="vbit_3.175mm")
