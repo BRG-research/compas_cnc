@@ -107,13 +107,22 @@ class toolpath_2d_ramp:
         For a closed loop with ``direction`` set: ``True`` if the loop is a pocket /
         outer wall (cleared region inside), ``False`` if it profiles an island / part
         outline (kept material inside). Sets which winding is climb. Defaults to ``True``.
-    tabs : iterable, optional
-        Hold-down TAB markers, each an ``(x, y[, z])`` point where the cut must NOT go
-        through -- an uncut bridge is left so the part stays fixed to the stock (like a
-        standard CNC tab). Only XY is used: each marker is snapped to the nearest point
-        on the ramp centre-path, and a marker farther than ``tab_width`` from the path
-        (belonging to another contour) is ignored -- so every marker may be passed to
-        every ramp. Defaults to ``None`` (no tabs).
+    tabs : int | iterable, optional
+        Hold-down TABS -- uncut bridges left so the freed part stays fixed to the stock.
+        Two ways to specify (the parameter is polymorphic):
+
+        * an **int** ``N`` -- auto-place ``N`` tabs at the most structurally stable spots
+          on the ramp contour (``0`` = the default, no tabs; larger = more). Placement is
+          by equal perimeter arc-length, so proportionally more tabs land on the LONGEST
+          edges and none cluster at corners -- a long part gets tabs near the quarters of
+          its long sides, holding it in balanced, high-span positions.
+        * an **iterable of points** -- explicit ``(x, y[, z])`` markers. Only XY is used:
+          each is snapped to the nearest point on the ramp centre-path, and a marker
+          farther than ``tab_width`` from the path (belonging to another contour) is
+          ignored, so every marker may be passed to every ramp.
+
+        Defaults to ``None`` (no tabs). Auto placement needs a CLOSED ramp loop (an open
+        plunge ramp gets none).
     tab_height : float, optional
         Bridge height: how far ABOVE the descent FLOOR (the deepest cut point) the tool
         is held over each tab, i.e. the thickness of uncut stock left. Defaults to 0.5.
@@ -180,7 +189,15 @@ class toolpath_2d_ramp:
         # uncut bridge so the part stays fixed to the stock. `tabs` are marker XY
         # points (the ramp snaps each onto its own centre-path); `tab_height` is how
         # far ABOVE the descent floor the bridge top sits; `tab_width` is its span.
-        self._tabs = [Point(*t) for t in tabs] if tabs else []
+        # `tabs` is polymorphic: an INT is a COUNT of auto-placed tabs (0 = none, the
+        # default); a sequence of points is explicit markers. `bool` is excluded (it is
+        # an int subclass) so a stray True/False can't be read as a count.
+        if tabs is None or isinstance(tabs, bool):
+            self._tabs, self.tab_count = [], 0
+        elif isinstance(tabs, int):
+            self._tabs, self.tab_count = [], max(0, tabs)
+        else:
+            self._tabs, self.tab_count = [Point(*t) for t in tabs], 0
         self.tab_height = float(tab_height)
         self.tab_width = float(tab_width)
         self.tabs = []
@@ -393,6 +410,41 @@ class toolpath_2d_ramp:
             self.notches.append((Point(*V), Point(V[0] + vec[0], V[1] + vec[1], V[2] + vec[2])))
         return out
 
+    def _auto_tab_points(self, count):
+        """Auto-place ``count`` hold-down tabs at the most structurally stable spots.
+
+        Walks the ramp CONTOUR (``self._pts``) at equal PERIMETER arc-length, each tab
+        centred within its interval. Because the spacing is by arc length, proportionally
+        more tabs fall on the LONGEST edges and none sit on a corner -- so a long thin
+        part is held near the quarters of its long sides (balanced, high span) rather than
+        at its weak ends. An OPEN ramp (a plunge) has no loop to hold, so returns ``[]``.
+        """
+        pts = self._pts
+        if count < 1 or len(pts) < 4:
+            return []
+        ring = pts[:-1] if pts[0].distance_to_point(pts[-1]) < 1e-9 else list(pts)
+        n = len(ring)
+        if n < 3:
+            return []
+        seg_len = [ring[i].distance_to_point(ring[(i + 1) % n]) for i in range(n)]
+        perimeter = sum(seg_len)
+        if perimeter < 1e-9:
+            return []
+        spacing = perimeter / count
+        tabs = []
+        for k in range(count):
+            target = (k + 0.5) * spacing  # centred in the k-th interval -> off the corners
+            acc = 0.0
+            for i in range(n):
+                length = seg_len[i]
+                if length > 1e-9 and acc + length >= target:
+                    t = (target - acc) / length
+                    a, b = ring[i], ring[(i + 1) % n]
+                    tabs.append(Point(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2]))
+                    break
+                acc += length
+        return tabs
+
     def _apply_tabs(self, points):
         """Lift the cut over hold-down TABS so uncut bridges hold the part down.
 
@@ -410,6 +462,8 @@ class toolpath_2d_ramp:
         :attr:`tabs` with the bridge-centre points; returns the (longer) point list.
         """
         self.tabs = []
+        if not self._tabs and self.tab_count > 0:  # int count -> auto-place now
+            self._tabs = self._auto_tab_points(self.tab_count)
         if not self._tabs:
             return points
         r = 0.5 * self.tab_width
