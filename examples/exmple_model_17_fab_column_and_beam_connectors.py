@@ -18,18 +18,17 @@ from compas_cnc import toolpath_2d_drill
 from compas_cnc import toolpath_2d_ramp
 from compas_cnc import toolpath_2d_surfacing
 from compas_cnc import toolpath_merge
+from compas_cnc.dxf import load_dxf
 from compas_cnc.tools import Tool
 from compas_cnc.tools import add_toolpath_slider
 
-# Column-and-beam connectors, machined flat from stock in THREE ordered steps with
-# TWO tools (data/custom_tool_path_connectors/):
-#   1. 6mm flat mill SURFACES the TABLE 1mm deep (`1_table_surfacing_6mm.obj`, two
-#      quads at Z=-1) -- levels the spoilboard under the part.
-#   2. the same 6mm mill SURFACES the MATERIAL (`2_surfacing_6mm.obj`, quads at Z=0
-#      and Z=1) -- the stepped top faces of the stock.
-#   3. a 2mm mill CUTS the parts (`3_ramp_with_stop_points.obj`): the degree-1 curves
-#      are the outer contours (RAMPED through the stock, tool on the waste side) and
-#      the degree-2 rational curves are the circles = holes (helical-DRILLED). That
+# Column-and-beam connectors, machined flat from stock in TWO ordered steps with a
+# SINGLE 2mm mill (data/custom_tool_path_connectors/):
+#   1. the 2mm mill SURFACES the MATERIAL (`2_surfacing_6mm.obj`, quads at Z=0 and
+#      Z=1) -- the stepped top faces of the stock.
+#   2. the same 2mm mill CUTS the parts (`3_ramp_with_stop_points.obj`): the degree-1
+#      curves are the outer contours (RAMPED through the stock, tool on the waste side)
+#      and the degree-2 rational curves are the circles = holes (helical-DRILLED). That
 #      file also carries standalone `p` STOP-POINTS -- markers where the ramp must NOT
 #      cut all the way through: the tool lifts a little there, leaving ~0.5mm uncut
 #      HOLD-DOWN TABS so the freed part cannot fly off the table.
@@ -40,30 +39,30 @@ GREY = (0.80, 0.80, 0.80)
 RED = (0.90, 0.20, 0.20)
 BLUE = (0.20, 0.40, 0.90)
 GREEN = (0.20, 0.70, 0.30)
-ORANGE = (0.95, 0.55, 0.10)  # 6mm facing tool-paths
-PURPLE = (0.60, 0.20, 0.90)  # 2mm contour/hole tool-paths
+ORANGE = (0.95, 0.55, 0.10)  # facing tool-paths (2mm)
+PURPLE = (0.60, 0.20, 0.90)  # contour/hole tool-paths (2mm)
 YELLOW = (0.98, 0.85, 0.10)  # hold-down tab markers
 
-RADIUS_MILL = 3.0  # 6mm-DIAMETER facing tool -> radius (the offset) is half = 3.0
+RADIUS_MILL = 1.0  # 2mm-DIAMETER facing tool -> radius (the offset) is half = 1.0
 RADIUS_RAMP = 1.0  # 2mm-DIAMETER contour/hole tool -> radius (the offset) is half = 1.0
 STEPOVER = RADIUS_MILL * 2 / 4  # facing pass spacing
 
-# Z model of the stock (mm), taken from the part solids in 4_geometry / the .3dm: the
-# parts span Z=-1 (bottom, == the surfaced table) up to Z=+2 (the tallest tops). The
-# cut must fill exactly that range -- start at the stock TOP and go down to the part
-# BOTTOM, and NEVER deeper (no overcut into the table), so the machined depth matches
-# the geometry.
+# Z model of the stock (mm), taken from the exported geometry: the parts span Z=0
+# (bottom == the table / contour plane) up to Z=+2 (the tallest tops; the stepped top
+# faces sit at Z=1 and Z=2). The cut fills exactly that range -- start at the stock TOP
+# and go down to the part BOTTOM at Z=0, and NEVER deeper (nothing cuts below zero into
+# the table), so the machined depth matches the geometry.
 STOCK_TOP = 2.0  # tallest part top -- ramp/drill start here (air above shorter parts is harmless)
-PART_BOTTOM = -1.0  # contour plane -> part bottom == surfaced table
+PART_BOTTOM = 0.0  # contour plane -> part bottom == table top (Z=0); nothing cuts below this
 OVERCUT = 0.0  # keep the floor AT the geometry bottom -- do not cut below it
-THROUGH = (STOCK_TOP - PART_BOTTOM) + OVERCUT  # ramp/drill descent depth (3.0)
-FLOOR = STOCK_TOP - THROUGH  # deepest world-Z reached (-1.0 == part bottom)
+THROUGH = (STOCK_TOP - PART_BOTTOM) + OVERCUT  # ramp/drill descent depth (2.0)
+FLOOR = STOCK_TOP - THROUGH  # deepest world-Z reached (0.0 == part bottom == table top)
 
-TAB_BRIDGE = 0.5  # thickness of uncut material left under each tab (the bridge)
+TAB_BRIDGE = 1.0  # bridge thickness from the floor up -- top reaches mid-thickness (2mm stock)
 TAB_LIFT = OVERCUT + TAB_BRIDGE  # tab height ABOVE the floor: skip the overcut + leave the bridge
 TAB_WIDTH = 3.0  # flat span of each tab along the cut
 
-DOC = 1.0  # depth of cut per pass (ramp/helix stepdown)
+DOC = 0.5  # depth of cut per pass (ramp/helix stepdown) -- small, the 2mm tool is weak
 DIRECTION = "climb"  # one-directional milling (CW / M3 cutter)
 MITER_LIMIT = 4.0  # convex corners offset to SHARP mitered points (no arcs); bevels past this length ratio
 Z_SAFE = 25.0
@@ -71,8 +70,7 @@ Z_SAFE = 25.0
 data_dir = pathlib.Path(__file__).parent.parent / "data"
 conn_dir = data_dir / "custom_tool_path_connectors"
 
-TOOL_MILL = Tool(RADIUS_MILL * 2, 30.0, name="mill_6mm")
-TOOL_RAMP = Tool(RADIUS_RAMP * 2, 30.0, name="ramp_2mm")
+TOOL = Tool(RADIUS_RAMP * 2, 30.0, name="mill_2mm")  # single 2mm mill for every operation
 
 
 def parse_obj_curves(path):
@@ -227,13 +225,15 @@ def load_geometry_meshes(dm_path):
 # ------------------------------------------------------------------ #
 # Read the three tool-path files.
 # ------------------------------------------------------------------ #
-table_quads = [pts for _deg, pts in parse_obj_curves(conn_dir / "1_table_surfacing_6mm.obj")]
-mat_quads = [pts for _deg, pts in parse_obj_curves(conn_dir / "2_surfacing_6mm.obj")]
+# `len(pts) >= 3` drops any degenerate 1-2 point curve a messy export might sneak in
+# (a quad/contour needs >= 3 control points); the real curves are unaffected.
+mat_quads = [pts for _deg, pts in parse_obj_curves(conn_dir / "2_surfacing_6mm.obj") if len(pts) >= 3]
 
 ramp_curves = parse_obj_curves(conn_dir / "3_ramp_with_stop_points.obj")
-outer_polys = [pts for deg, pts in ramp_curves if deg == 1]  # outer contours -> ramp
+outer_polys = [pts for deg, pts in ramp_curves if deg == 1 and len(pts) >= 3]  # outer contours -> ramp
 holes = [fit_circle(pts) for deg, pts in ramp_curves if deg == 2]  # circles -> drill
-stops = parse_obj_points(conn_dir / "3_ramp_with_stop_points.obj")  # tab markers
+# The export carries an extra 0,0,0 REFERENCE point -- drop it; the rest are tab markers.
+stops = [p for p in parse_obj_points(conn_dir / "3_ramp_with_stop_points.obj") if p.distance_to_point(Point(0.0, 0.0, 0.0)) > 1e-6]
 
 # Each stop-point sits on one contour's outline -> group by nearest contour.
 tabs_per_contour = [[] for _ in outer_polys]
@@ -241,16 +241,7 @@ for stop in stops:
     tabs_per_contour[nearest_contour(stop, outer_polys)].append(stop)
 
 # ------------------------------------------------------------------ #
-# 6mm tool, step 1: face the TABLE flat at Z=-1.
-# ------------------------------------------------------------------ #
-table_surfacings = []
-for quad in table_quads:
-    tp = toolpath_2d_surfacing.from_quad(quad, RADIUS_MILL, safe_z=Z_SAFE, stepover=STEPOVER, direction=DIRECTION)
-    if tp is not None:
-        table_surfacings.append(tp)
-
-# ------------------------------------------------------------------ #
-# 6mm tool, step 2: face each top rectangle of the MATERIAL at its own Z.
+# 2mm tool, step 1: face each top rectangle of the MATERIAL at its own Z.
 # ------------------------------------------------------------------ #
 mat_surfacings = []
 for quad in mat_quads:
@@ -259,7 +250,7 @@ for quad in mat_quads:
         mat_surfacings.append(tp)
 
 # ------------------------------------------------------------------ #
-# 2mm tool, step 3a: ramp every contour through the stock. Contours are grown OUTWARD
+# 2mm tool, step 2a: ramp every contour through the stock. Contours are grown OUTWARD
 # by the tool radius (Clipper2, MITER join -> sharp polygonal corners; a round tool
 # traces a sharp external corner fine) so the tool rides the waste side; the profile
 # is lifted to STOCK_TOP and ramped straight down to FLOOR. A round tool cannot reach
@@ -288,7 +279,7 @@ for index, poly in enumerate(outer_polys):
         )
     )
 
-# 2mm tool, step 3b: helical-drill each hole, the tool centre orbiting inset toward the
+# 2mm tool, step 2b: helical-drill each hole, the tool centre orbiting inset toward the
 # axis by the tool radius so the edge just reaches the wall (inside-offset).
 hole_drills = []
 for center, radius in holes:
@@ -296,21 +287,15 @@ for center, radius in holes:
     hole_drills.append(toolpath_2d_drill(axis, radius, RADIUS_RAMP * 2, floor=FLOOR, safe_z=Z_SAFE))
 
 # ------------------------------------------------------------------ #
-# Three .nc files matching the three steps: 6mm table facing, 6mm material facing,
-# then the 2mm contours + holes (run 1, run 2, swap the bit, run 3).
+# ONE .nc, one 2mm tool, one merged toolpath: material facing first, then the contours
+# + holes -- a single program, no bit change, run start to finish in one go.
 # ------------------------------------------------------------------ #
-group_6mm = table_surfacings + mat_surfacings
-group_2mm = contour_ramps + hole_drills
-toolpaths = group_6mm + group_2mm
+group_surface = mat_surfacings
+group_cut = contour_ramps + hole_drills
+toolpaths = group_surface + group_cut
 
-post_mill = Postprocessor(tool=TOOL_MILL, tool_number=1, feed=300, spindle_speed=10000, coolant="air", material="Wood", program="Connectors step 1 (6mm table surfacing)")
-post_mill.write(conn_dir / "connectors_1_table_6mm.nc", toolpath_merge(*table_surfacings))
-
-post_mill2 = Postprocessor(tool=TOOL_MILL, tool_number=1, feed=300, spindle_speed=10000, coolant="air", material="Wood", program="Connectors step 2 (6mm material surfacing)")
-post_mill2.write(conn_dir / "connectors_2_surfacing_6mm.nc", toolpath_merge(*mat_surfacings))
-
-post_ramp = Postprocessor(tool=TOOL_RAMP, tool_number=2, feed=250, spindle_speed=10000, coolant="air", material="Wood", program="Connectors step 3 (2mm contours + holes, hold-down tabs)")
-post_ramp.write(conn_dir / "connectors_3_cut_2mm.nc", toolpath_merge(*group_2mm))
+post = Postprocessor(tool=TOOL, tool_number=1, feed=400, spindle_speed=10000, coolant="air", material="Wood", program="Connectors (2mm: surfacing + contours + holes, hold-down tabs)")
+post.write(conn_dir / "connectors_2mm.nc", toolpath_merge(*toolpaths))
 
 # ------------------------------------------------------------------ #
 # Viewer
@@ -322,9 +307,17 @@ solids = scene.add_group("connectors_geometry")
 for index, mesh in enumerate(load_geometry_meshes(conn_dir / "custom_tool_path_connectors.3dm")):
     solids.add(triangulated(mesh), name=f"solid_{index}", color=GREY, hide_coplanaredges=True)
 
+# The CNC table (Carvera Air 300x200 work area, outline + 57 mounting holes) from the
+# DXF, for context. The circles are stored with a flipped OCS extrusion (0,0,-1) -- the
+# raw file reads them at negative X -- but ezdxf resolves OCS->WCS on load, so they come
+# back correctly in +X (7.5..295), seated under the parts (X 100..200, Y 31..125). The
+# table plane and the part BOTTOM are both Z=0, so no drop is needed (PART_BOTTOM=0.0).
+DROP = Translation.from_vector([0.0, 0.0, PART_BOTTOM])  # seat the table on the part-bottom plane
+table_group = scene.add_group("cnc_table")
+for index, curve in enumerate(load_dxf(data_dir / "cnc_table_holes.dxf")):
+    table_group.add(curve.transformed(DROP), name=f"table_{index}", color=BLUE)
+
 curves = scene.add_group("cut_curves")
-for index, quad in enumerate(table_quads):
-    curves.add(closed(quad, z=quad[0][2]), name=f"table_quad_{index}", color=GREY)
 for index, quad in enumerate(mat_quads):
     curves.add(closed(quad, z=quad[0][2]), name=f"mill_quad_{index}", color=BLUE)
 for index, poly in enumerate(outer_polys):
@@ -341,13 +334,13 @@ for tp in contour_ramps:
         tab_group.add(marker(tab), name=f"tab_{tab_id}", color=YELLOW)
         tab_id += 1
 
-# The actual tool-centre paths as polylines -- orange for the 6mm facing, purple for
-# the 2mm contours/holes. Keep the LIVE objects so the selected one can turn red; also
-# record each into the bundle.
+# The actual tool-centre paths as polylines -- orange for the facing, purple for the
+# contours/holes (all 2mm). Keep the LIVE objects so the selected one can turn red;
+# also record each into the bundle.
 paths = scene.add_group("toolpaths")
 path_objs, path_colors = [], []
 for index, tp in enumerate(toolpaths):
-    color = ORANGE if index < len(group_6mm) else PURPLE
+    color = ORANGE if index < len(group_surface) else PURPLE
     path_objs.append(paths._live.add(tp.path, name=f"path_{index}", color=color))
     paths._rec.add(tp.path, name=f"path_{index}", color=color)
     path_colors.append(color)
@@ -355,8 +348,8 @@ for index, tp in enumerate(toolpaths):
 dump_bundle(scene, data_dir / "custom_tool_path_connectors.json")
 
 # Two sliders (live viewer only): one selects the tool-path by id (turning it RED),
-# the other scrubs the cutter along it. 6mm mill for the facing paths, 2mm for the rest.
-sim_entries = [(TOOL_MILL, tp.path) for tp in group_6mm] + [(TOOL_RAMP, tp.path) for tp in group_2mm]
+# the other scrubs the cutter along it. A single 2mm mill drives every path.
+sim_entries = [(TOOL, tp.path) for tp in toolpaths]
 if hasattr(viewer, "ui"):
     add_toolpath_slider(viewer, sim_entries, path_objs, path_colors)
 viewer.show()
