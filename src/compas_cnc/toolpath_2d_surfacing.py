@@ -194,7 +194,9 @@ class toolpath_2d_surfacing:
         big = sorted(quads, key=mesh.face_area, reverse=True)[:2]  # top + bottom
         big.sort(key=lambda fk: sum(p[2] for p in mesh.face_coordinates(fk)))  # by Z
         face_id = big[1] if top else big[0]
-        return cls.from_quad(mesh.face_coordinates(face_id), radius, safe_z=safe_z, stepover=stepover, flip=flip, incline=incline, direction=direction, start=start, contour=contour)
+        return cls.from_quad(
+            mesh.face_coordinates(face_id), radius, safe_z=safe_z, stepover=stepover, flip=flip, incline=incline, direction=direction, start=start, contour=contour
+        )
 
     # ------------------------------------------------------------------ #
 

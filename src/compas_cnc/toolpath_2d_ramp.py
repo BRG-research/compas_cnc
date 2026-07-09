@@ -148,7 +148,23 @@ class toolpath_2d_ramp:
     offset : float
     """
 
-    def __init__(self, path, descent, step=None, ramp_angle=None, bottom_pass=True, safe_z=None, offset=0.0, notch=0.0, notch_flip=False, direction=None, pocket=True, tabs=None, tab_height=0.5, tab_width=3.0):
+    def __init__(
+        self,
+        path,
+        descent,
+        step=None,
+        ramp_angle=None,
+        bottom_pass=True,
+        safe_z=None,
+        offset=0.0,
+        notch=0.0,
+        notch_flip=False,
+        direction=None,
+        pocket=True,
+        tabs=None,
+        tab_height=0.5,
+        tab_width=3.0,
+    ):
         pts = [Point(*p) for p in path]
         if len(pts) < 2:
             raise ValueError("ramp path needs at least 2 points.")

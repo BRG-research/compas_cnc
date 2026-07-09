@@ -250,7 +250,8 @@ for quad in mat_quads:
         mat_surfacings.append(tp)
 
 # ------------------------------------------------------------------ #
-# 2mm tool, step 2a: ramp every contour through the stock. Contours are grown OUTWARD
+# 2mm tool, step 2b -- machined LAST (frees the parts, so it must follow the holes):
+# ramp every contour through the stock. Contours are grown OUTWARD
 # by the tool radius (Clipper2, MITER join -> sharp polygonal corners; a round tool
 # traces a sharp external corner fine) so the tool rides the waste side; the profile
 # is lifted to STOCK_TOP and ramped straight down to FLOOR. A round tool cannot reach
@@ -279,19 +280,21 @@ for index, poly in enumerate(outer_polys):
         )
     )
 
-# 2mm tool, step 2b: helical-drill each hole, the tool centre orbiting inset toward the
-# axis by the tool radius so the edge just reaches the wall (inside-offset).
+# 2mm tool, step 2a -- machined FIRST (while the parts are still solidly fixed to the
+# stock, before any contour frees them): helical-drill each hole, the tool centre
+# orbiting inset toward the axis by the tool radius so the edge just reaches the wall.
 hole_drills = []
 for center, radius in holes:
     axis = Line(Point(center[0], center[1], STOCK_TOP), Point(center[0], center[1], FLOOR))
     hole_drills.append(toolpath_2d_drill(axis, radius, RADIUS_RAMP * 2, floor=FLOOR, safe_z=Z_SAFE))
 
 # ------------------------------------------------------------------ #
-# ONE .nc, one 2mm tool, one merged toolpath: material facing first, then the contours
-# + holes -- a single program, no bit change, run start to finish in one go.
+# ONE .nc, one 2mm tool, one merged toolpath, in machining order: face the material,
+# DRILL the holes while every part is still fixed, then RAMP the freeing contours LAST
+# so no part comes loose before its holes are bored -- a single program, no bit change.
 # ------------------------------------------------------------------ #
 group_surface = mat_surfacings
-group_cut = contour_ramps + hole_drills
+group_cut = hole_drills + contour_ramps  # holes FIRST, part-freeing contours LAST
 toolpaths = group_surface + group_cut
 
 post = Postprocessor(tool=TOOL, tool_number=1, feed=400, spindle_speed=10000, coolant="air", material="Wood", program="Connectors (2mm: surfacing + contours + holes, hold-down tabs)")
