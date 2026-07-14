@@ -72,7 +72,7 @@ CUT_OVERCUT = 0.2  # boundary cut dips this far past the sheet bottom so it brea
 STOCK_TOP = 0.0  # top face of the sheet = work Z-zero (probe the top; cut downward)
 PART_BOTTOM = STOCK_TOP - STOCK_THICKNESS  # sheet bottom 3 mm below zero -> cut in -Z
 ENGRAVE_FLOOR = STOCK_TOP - ENGRAVE_DEPTH  # score 2 mm into the top face
-SAFE_Z = STOCK_TOP + 10.0  # rapid-travel plane (>= MIN_CLEARANCE above the top)
+SAFE_Z = STOCK_TOP + 40.0  # rapid-travel plane, 40 mm above the top face (= work zero)
 TABS = 4  # hold-down tabs auto-placed around each boundary
 TAB_HEIGHT = 1.0  # uncut bridge left at each tab, measured up from the cut floor
 TAB_WIDTH = 4.0  # flat span of each tab along the cut
@@ -372,7 +372,7 @@ def sheet_transform(long_dir, center, sheet_center):
 
 
 def engrave_toolpath(segments):
-    """Score each inner fold LINE 1 mm into the top face.
+    """Score each inner fold LINE 2 mm into the top face.
 
     For every ``(a, b)`` segment the tool approaches at :data:`SAFE_Z`, plunges to
     :data:`ENGRAVE_FLOOR`, cuts straight across to the far end, and retracts - the

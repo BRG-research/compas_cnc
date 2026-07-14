@@ -62,13 +62,13 @@ TAB_HEIGHT = 2.0  # uncut bridge THICKNESS left at each tab, up from the ramp fl
 # this much actual bridge -- otherwise a tab narrower than the tool leaves nothing at all.
 TAB_WIDTH = 6.0  # real uncut bridge length along the cut (mm)
 MITER_LIMIT = 4.0  # convex corners offset to sharp mitered points
-SAFE_CLEARANCE = 10.0  # rapid-travel height ABOVE the stock top (mm); each Job computes
+SAFE_CLEARANCE = 40.0  # rapid-travel height ABOVE the stock top (mm); each Job computes
 #                        safe_z = stock_top + SAFE_CLEARANCE, so a taller part gets a
 #                        proportionally higher safe plane instead of a fixed one.
 Z_SAFE = 25.0  # fallback safe height for standalone builder calls (a Job overrides it)
 PART_BOTTOM = 0.0  # the ramp/drill OBJs sit at Z=0 -- the table / contour plane
 RAMP_OVERCUT = 0.0  # ramp ends exactly at the contour polyline's Z (no dip below it), so the
-#                     tab tops sit the full TAB_HEIGHT (1 mm) above that polyline
+#                     tab tops sit the full TAB_HEIGHT (2 mm) above that polyline
 DRILL_OVERCUT = 0.5  # drill deliberately below PART_BOTTOM so through-holes break through
 FEED = 400
 FIRST_CUT_FEED_FACTOR = 0.5  # first cutting move of every tool-path runs at half FEED --
@@ -106,23 +106,6 @@ def parse_obj_curves(path):
                     pts = pts[:-1]
                 curves.append((degree, pts))
     return curves
-
-
-def parse_obj_points(path):
-    """Standalone ``p`` points of a Rhino OBJ -> ``[Point, ...]`` (the origin marker)."""
-    verts = []
-    points = []
-    with open(path) as handle:
-        for raw in handle:
-            parts = raw.split()
-            if not parts:
-                continue
-            if parts[0] == "v":
-                verts.append((float(parts[1]), float(parts[2]), float(parts[3])))
-            elif parts[0] == "p":
-                for i in parts[1:]:
-                    points.append(Point(*verts[int(i) - 1]))
-    return points
 
 
 def fit_circle(pts):
@@ -972,8 +955,8 @@ class Job:
         """Rapid-travel height: :data:`SAFE_CLEARANCE` mm above this job's stock top.
 
         Tracks the stock so a short part (like the inner ribs, whose stock top is the
-        Z=0 datum) gets a low safe plane (~10 mm) instead of a fixed 25 mm, while a
-        taller folder's paths automatically travel higher.
+        Z=0 datum) gets a safe plane at ~40 mm, while a taller folder's paths
+        automatically travel higher.
         """
         return self.stock_top + SAFE_CLEARANCE
 

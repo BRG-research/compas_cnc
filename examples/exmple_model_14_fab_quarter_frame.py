@@ -32,7 +32,7 @@ MARGIN = 30.0  # min gap left between laid-flat beam footprints by the de-overla
 # flat on the ground for fabrication - the tsections, outer/inner ribs, inner
 # beams and their wedges. The beds (group "beds_0") are NOT touched here: they
 # are a developable chain, unrolled separately in
-# exmple_model_14_fab_quarter_beds_ribs_tsections_outer_beams_wedges.py.
+# exmple_model_14_fab_quarter_bed.py.
 #
 # Like the oculus fab example, each plate's full placement is first folded into
 # its OWN transformation (every group's zeroed), so a plate's transformation IS

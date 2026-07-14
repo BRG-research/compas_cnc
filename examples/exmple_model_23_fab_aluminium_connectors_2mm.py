@@ -36,7 +36,6 @@ from compas_cnc.tools import add_toolpath_slider
 # are not rendered here; the cut curves + tool-paths stand in for the parts.
 
 GREY = (0.80, 0.80, 0.80)
-RED = (0.90, 0.20, 0.20)
 BLUE = (0.20, 0.40, 0.90)
 GREEN = (0.20, 0.70, 0.30)
 ORANGE = (0.95, 0.55, 0.10)  # facing tool-paths

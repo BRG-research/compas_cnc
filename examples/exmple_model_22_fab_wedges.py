@@ -4,7 +4,7 @@
 they are ROUGHED first in constant-Z terraces (light flat steps down from the stock top)
 and only then finished with the continuous inclined sweep -- the tool hogs the wedge out
 gently instead of one fully-buried pass. Each sweep starts from the top-outer bbox corner.
-Ø6 mm then ramps the contours through the stock with 4 hold-down tabs. Everything is one
+Ø6 mm then ramps the contours through the stock with 6 hold-down tabs. Everything is one
 tool, so ``run()`` writes a single .nc. Run with the project .venv:
 
     .venv/Scripts/python.exe examples/exmple_model_22_fab_wedges.py

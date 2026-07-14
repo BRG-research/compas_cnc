@@ -2,7 +2,7 @@
 
 Ø6 mm surfaces the up-facing face (an N-gon -> raster-pocketed) and Ø3.175 mm surfaces
 the finer faces, then Ø3.175 mm helical-drills the circular holes and ramps the contours
-through the stock with 4 hold-down tabs. Run with the project .venv:
+through the stock with 6 hold-down tabs. Run with the project .venv:
 
     .venv/Scripts/python.exe examples/exmple_model_20_fab_outer_ribs.py
 """
