@@ -12,7 +12,7 @@ import _custom_toolpath as ct
 (
     ct.Job("custom_toolpath_inner_beams", "Inner beams")
     .surface()      # Ø6 mm: mill inside every up-facing rectangle
-    .ramp(tabs=4)   # Ø3.175 mm: ramp contours through, 4 hold-down tabs
+    .ramp(tabs=4, notch=True)  # Ø3.175 mm: ramp contours with dogbone notches + 4 tabs
     .drill()        # Ø3.175 mm: helical-drill the holes
     .run()          # write one .nc per tool + open the viewer
 )

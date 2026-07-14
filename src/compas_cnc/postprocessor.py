@@ -80,6 +80,16 @@ class Postprocessor:
     feed : float, optional
         Cutting feed rate (mm/min) set once with ``G1 F{feed}``. Defaults to
         ``200``.
+    plunge_feed : float, optional
+        Feed rate for a straight Z-DOWN plunge (a move that keeps X/Y and only
+        lowers Z). ``None`` (default) plunges at ``feed``.
+    first_cut_feed_factor : float, optional
+        Scale (in ``(0, 1]``) applied to ``feed`` for the FIRST cutting move of
+        EVERY tool-path -- the initial engagement, which bites the deepest as it
+        enters full-thickness stock. Each sub-path in a merged program begins from
+        the safe plane, so the first ``G1`` that leaves the rapid height is slowed
+        to ``feed * factor``; the rest of that path resumes at ``feed``. ``None``
+        (default) keeps every cut at ``feed``. ``0.5`` = first cut at half feed.
     spindle_speed : int, optional
         Spindle RPM for ``S{rpm} M3``. Defaults to ``12000``.
     coolant : str | None, optional
@@ -127,6 +137,7 @@ class Postprocessor:
         tool_number=1,
         feed=200.0,
         plunge_feed=None,
+        first_cut_feed_factor=None,
         spindle_speed=12000,
         coolant="mist",
         rapid_z=None,
@@ -144,6 +155,9 @@ class Postprocessor:
         self.tool_number = int(tool_number)
         self.feed = float(feed)
         self.plunge_feed = None if plunge_feed is None else float(plunge_feed)
+        if first_cut_feed_factor is not None and not (0.0 < float(first_cut_feed_factor) <= 1.0):
+            raise ValueError("first_cut_feed_factor must be in (0, 1].")
+        self.first_cut_feed_factor = None if first_cut_feed_factor is None else float(first_cut_feed_factor)
         self.spindle_speed = int(spindle_speed)
         self.coolant = coolant
         self.rapid_z = None if rapid_z is None else float(rapid_z)
@@ -167,11 +181,16 @@ class Postprocessor:
         text = f"{value:.{self.precision}f}".rstrip("0").rstrip(".")
         return text or "0"
 
+    def _tool_desc(self, tool, number):
+        """Header tool string for an arbitrary ``tool``/slot ``number``, e.g.
+        ``T2-2.0*30.0mm cut``."""
+        if tool is None:
+            return f"T{number}-End Mill"
+        return f"T{number}-{tool.diameter}*{tool.height}mm {tool.name}"
+
     def _tool_description(self):
-        """Header tool string, e.g. ``T1-3.175*19mm Flat End``."""
-        if self.tool is None:
-            return f"T{self.tool_number}-End Mill"
-        return f"T{self.tool_number}-{self.tool.diameter}*{self.tool.height}mm {self.tool.name}"
+        """Header tool string for this post's own tool, e.g. ``T1-3.175*19mm Flat End``."""
+        return self._tool_desc(self.tool, self.tool_number)
 
     @property
     def _coolant_code(self):
@@ -232,11 +251,15 @@ class Postprocessor:
         Moves that reach the safe plane (``rapid_z``) are non-cutting retracts /
         repositions and go out as rapid ``G0``; everything below it cuts and goes out
         as ``G1`` at ``feed`` (or ``plunge_feed`` for a straight Z-down plunge). The
-        feed word is modal, emitted only when it changes.
+        FIRST cutting move of each tool-path -- the first ``G1`` after the tool has been
+        at the safe plane -- is slowed to ``feed * first_cut_feed_factor`` when that is
+        set, so the deepest initial engagement bites gently before the rest resumes at
+        ``feed``. The feed word is modal, emitted only when it changes.
         """
         rapid_z = self._fmt(self.rapid_z if self.rapid_z is not None else max(p.z for p in points))
         feed = self.feed  # the header already emitted G1 F{feed}
         prev = None  # previous (x, y, z) as formatted strings
+        at_rapid = True  # header lifted to rapid_z, so the next descent is a first cut
         lines = []
         for point in points:
             x, y, z = self._fmt(point.x), self._fmt(point.y), self._fmt(point.z)
@@ -244,14 +267,20 @@ class Postprocessor:
                 continue  # no motion -- skip a coincident point
             if z == rapid_z:  # at the safe plane -> non-cutting rapid
                 lines.append(f"G0 X{x} Y{y} Z{z}")
+                at_rapid = True  # back on the safe plane -> the next cut starts a new path
             else:
-                plunging = self.plunge_feed is not None and prev is not None and x == prev[0] and y == prev[1] and float(z) < float(prev[2]) - 1e-9
-                want = self.plunge_feed if plunging else self.feed
+                if at_rapid and self.first_cut_feed_factor is not None:
+                    want = self.feed * self.first_cut_feed_factor  # gentle first engagement
+                elif self.plunge_feed is not None and prev is not None and x == prev[0] and y == prev[1] and float(z) < float(prev[2]) - 1e-9:
+                    want = self.plunge_feed  # straight Z-down plunge
+                else:
+                    want = self.feed
                 move = f"G1 X{x} Y{y} Z{z}"
                 if want != feed:
                     move += f" F{self._fmt(want)}"
                     feed = want
                 lines.append(move)
+                at_rapid = False  # only the FIRST cut after a rapid is slowed
             prev = (x, y, z)
         return lines
 
@@ -344,6 +373,104 @@ class Postprocessor:
         if path.suffix.lower() != ".nc":
             path = path.with_suffix(".nc")
         path.write_text(self.to_gcode(*toolpaths), encoding="utf-8")
+        return path
+
+    # ------------------------------------------------------------------ #
+    # Multi-tool program (several tools in ONE .nc, with tool changes)
+    # ------------------------------------------------------------------ #
+
+    def to_gcode_program(self, sections, tool_change_note="tool change + automatic tool-length touch-off", calibrate=None):
+        """Full ``.nc`` for SEVERAL tools run as one Carvera job.
+
+        On the Carvera Air every ``.nc`` you load needs its own load-probe-cut cycle, so a
+        two-tool part (e.g. engrave then profile-cut) otherwise means loading, probing and
+        running twice. This packs the operations into ONE program instead: a single header
+        and footer, and between them, for EACH section, a ``T{n} M6`` tool change, the
+        spindle start, that section's motion, and a spindle stop before the next change. So
+        the machine runs: (probe the STOCK once, set in the Controller) -> change to tool 1,
+        cut section 1 -> change to tool 2, cut section 2.
+
+        Tool-length calibration is part of the Carvera's ``M6`` routine: the change touches
+        off the newly loaded tool on the setter, and the firmware halts the job if a valid
+        TLO has not been measured -- so no separate calibration line is needed and every
+        (including manually fed) tool is re-measured at its ``M6``. ``calibrate`` can emit an
+        EXTRA explicit probe after each ``M6`` for setups that need it, but it is off by
+        default to avoid a redundant second touch-off.
+
+        Parameters
+        ----------
+        sections : list[tuple]
+            Ordered ``(tool, tool_number, label, toolpaths)`` -- one milling operation per
+            physical tool, machined in this order. ``tool``/``tool_number`` fill that
+            section's tool-change and header comments; ``label`` is its path-list line.
+        tool_change_note : str, optional
+            Comment appended to each ``T{n} M6`` line.
+        calibrate : str | None, optional
+            Extra tool-length calibration command emitted after each ``M6`` (spindle off) --
+            e.g. ``"M491"`` (the Carvera TLO probe). ``None`` (default) relies on the ``M6``
+            routine's own touch-off; set it only if your firmware does NOT calibrate in M6.
+
+        Every section is checked against the travel envelope (see :attr:`on_exceed`). Set
+        the work origin (probe the stock) in the Controller before running, exactly as for a
+        single-tool file. Feed, spindle, coolant, material and stock size are shared across
+        the sections (the whole part is one setup).
+        """
+        prepared = []
+        for tool, number, label, toolpaths in sections:
+            points = self._points(toolpaths if isinstance(toolpaths, (list, tuple)) else [toolpaths])
+            if not points:
+                continue
+            self._enforce_limits(points)
+            prepared.append((tool, number, label, points))
+        if not prepared:
+            raise ValueError("no tool-path points to post-process.")
+
+        lines = ["%", "; 3-Axis"]
+        if self.material:
+            lines.append(f"; Material: {self.material}")
+        if self.stock_size:
+            sx, sy, sz = self.stock_size
+            lines.append(f"; Stock Size: {self._fmt(sx)}(X) * {self._fmt(sy)}(Y) * {self._fmt(sz)}(Z) mm")
+        lines.append("; Tool List")
+        for tool, number, _label, _points in prepared:
+            lines.append(f"; {self._tool_desc(tool, number)}")
+        lines.append("; Path List")
+        for _tool, number, label, _points in prepared:
+            lines.append(f"; [T{number}]{label}")
+        lines.append("G90 G21              ; Absolute positioning, units in millimeters")
+
+        coolant = self._coolant_code
+        for index, (tool, number, label, points) in enumerate(prepared):
+            rapid_z = self.rapid_z if self.rapid_z is not None else max(p.z for p in points)
+            first = points[0]
+            lines.append("")
+            lines.append(f"; ---- Tool {number}: {label} ----")
+            lines.append(f"; {self._tool_desc(tool, number)}")
+            lines.append(f"T{number} M6                ; Tool change to Tool {number} -- {tool_change_note}")
+            if calibrate:
+                lines.append(f"{calibrate}                 ; Calibrate tool {number} length (spindle off, probe the tool setter)")
+            if coolant and index == 0:
+                kind = "flood" if coolant == "M8" else "mist"
+                lines.append(f"{coolant}                   ; Coolant ON ({kind})")
+            lines.append(f"; G0 X{self._fmt(first.x)} Y{self._fmt(first.y)} ; Rapid move to position (informational)")
+            lines.append(f"S{self.spindle_speed} M3            ; Spindle ON clockwise at {self.spindle_speed} RPM")
+            lines.append(f"G0 Z{self._fmt(rapid_z)}")
+            lines.append(f"G1 F{self._fmt(self.feed)}")
+            lines.extend(self.body(points))
+            lines.append("M5        ; Stop the spindle for the tool change")
+        if coolant:
+            lines.append("M9        ; Turn off coolant")
+        lines.append("G28       ; Return all axes to the machine home position")
+        lines.append("M02       ; End of program")
+        return "\n".join(lines) + "\n"
+
+    def write_program(self, filepath, sections, **kwargs):
+        """Write :meth:`to_gcode_program` for ``sections`` to ``filepath`` (``.nc`` added if
+        missing). Returns the resolved :class:`pathlib.Path`."""
+        path = pathlib.Path(filepath)
+        if path.suffix.lower() != ".nc":
+            path = path.with_suffix(".nc")
+        path.write_text(self.to_gcode_program(sections, **kwargs), encoding="utf-8")
         return path
 
     def __repr__(self):

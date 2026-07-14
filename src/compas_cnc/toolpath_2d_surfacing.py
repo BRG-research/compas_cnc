@@ -47,10 +47,13 @@ class toolpath_2d_surfacing:
         ``<= stepover`` (the pass count is rounded up).
     direction : {None, "climb", "conventional"}, optional
         Milling direction for hard materials (assumes a CW / M3 tool; on M4 pick the
-        opposite label). When set, the finishing contour is wound to match (the
-        rectangle is a pocket wall) and the zig-zag goes one-directional (every pass
-        cut the same way, lift + rapid between). ``None`` (default) is the faster
-        bidirectional zig-zag, fine for soft materials.
+        opposite label). When set, the zig-zag goes one-directional (every pass cut the
+        same way, lift + rapid between) AND is oriented so the raster itself cuts the
+        requested handedness -- CLIMB keeps the uncut (stepover) material on the LEFT of
+        travel -- not just the finishing contour, which is likewise wound to match (the
+        rectangle is a pocket wall). ``None`` (default) is the faster bidirectional
+        zig-zag, fine for soft materials. See :meth:`from_quad` for how the raster
+        direction is reconciled with the ``start`` corner.
     contour : bool, optional
         Add the finishing lap around the full inset perimeter after the zig-zag.
         ``True`` (default) walks the boundary and returns to the start corner before
@@ -98,7 +101,7 @@ class toolpath_2d_surfacing:
     # ------------------------------------------------------------------ #
 
     @classmethod
-    def from_quad(cls, points, radius, safe_z=None, stepover=None, flip=False, incline=False, direction=None, start=None, contour=True):
+    def from_quad(cls, points, radius, safe_z=None, stepover=None, flip=False, incline=False, direction=None, start=None, contour=True, lock_flip=False):
         """Build a tool-path that fills a 4-corner face.
 
         ``points`` are the face's 4 corners in order -- as an open list/polyline of
@@ -118,8 +121,18 @@ class toolpath_2d_surfacing:
         (default) starts at the HIGHEST corner, so a tilted face is cut from the top
         downhill; an integer ``0-3`` selects that corner of the face outline by index
         (the order ``points`` are given / the mesh face's corner loop); or pass a
-        point ``(x, y, z)`` to start at the corner nearest it. On a flat face ``None``
-        keeps the ``flip`` start. Re-orients the rails only; the zigzag is unchanged.
+        point ``(x, y, z)`` to start at the corner nearest it.
+
+        When ``direction`` is set, start-high and the requested milling handedness are
+        reconciled: among the highest corner(s) -- a flat face ties all four, a
+        horizontal top edge ties two -- the one whose raster cuts the requested
+        direction is chosen, so both are satisfied for free. Only a face with a SINGLE
+        strictly-highest corner can force a conflict; there the sweep pattern (``flip``)
+        is toggled so the direction still wins while the start stays highest -- UNLESS
+        ``lock_flip`` is set, which pins the sweep to the caller's ``flip`` pair (the
+        milling ``direction`` then only chooses the start corner / handedness within it,
+        accepting whatever handedness results). Use ``lock_flip`` when the sweep
+        orientation matters more than climb/conventional for a particular face.
         """
         pts = [Point(*p) for p in points]
         if len(pts) >= 2 and pts[0].distance_to_point(pts[-1]) < 1e-9:
@@ -133,29 +146,98 @@ class toolpath_2d_surfacing:
         len_b = pair_b[0].length + pair_b[1].length
         auto = pair_b if len_a >= len_b else pair_a  # rails = shorter edges -> sweep long side
         other = pair_a if len_a >= len_b else pair_b
-        line0, line1 = other if flip else auto
-        # Pick the start corner (it becomes line0.start): the HIGHEST corner by
-        # default, or the corner nearest `start`. Swapping the rails / flipping both
-        # keeps line0.start and line1.start edge-connected, so the raster and contour
-        # walk stay valid. On a flat face the default leaves the `flip` start as is.
-        ends = [line0.start, line0.end, line1.start, line1.end]
-        if start is None:
-            which = max(range(4), key=lambda i: ends[i][2])  # highest corner by Z
+        chosen = other if flip else auto  # the caller's sweep pattern (long vs short side)
+        alt = auto if flip else other  # the other pair -- toggling to it flips raster handedness
+
+        def _orient(pair, corner):
+            """Orient ``pair`` so ``line0.start`` is the quad corner nearest ``corner``.
+
+            Swapping the rails / reversing both keeps ``line0.start`` and ``line1.start``
+            edge-connected, so the raster and contour walk stay valid (never diagonal).
+            """
+            line0, line1 = pair
+            ends = [line0.start, line0.end, line1.start, line1.end]
+            which = min(range(4), key=lambda i: ends[i].distance_to_point(corner))
+            if which >= 2:  # nearest corner is on line1 -> make that rail line0
+                line0, line1 = line1, line0
+                which -= 2
+            if which == 1:  # nearest corner is the rail END -> reverse both rails
+                line0 = Line(line0.end, line0.start)
+                line1 = Line(line1.end, line1.start)
+            return line0, line1
+
+        def _fits(line0, line1):
+            # A tool of `radius` insets `radius` off every edge, so the face must be wider
+            # than the tool DIAMETER on both axes -- else the inset collapses / crosses over.
+            gap = (line1.start - line0.start).length
+            return min(line0.length, line1.length) > 2 * radius and gap > 2 * radius
+
+        if direction is None:
+            # No milling direction: the raster is bidirectional, so its handedness is
+            # irrelevant -- keep the legacy pick: HIGHEST corner by Z (or nearest `start`)
+            # on the caller's pair.
+            line0, line1 = chosen
+            ends = [line0.start, line0.end, line1.start, line1.end]
+            if start is None:
+                which = max(range(4), key=lambda i: ends[i][2])  # highest corner by Z
+            else:
+                start_pt = pts[start % 4] if isinstance(start, int) else Point(*start)  # outline id, or a point
+                which = min(range(4), key=lambda i: ends[i].distance_to_point(start_pt))
+            if which >= 2:  # the chosen corner is on line1 -> make that rail line0
+                line0, line1 = line1, line0
+                which -= 2
+            if which == 1:  # the chosen corner is the rail END -> flip both rails so it is the START
+                line0 = Line(line0.end, line0.start)
+                line1 = Line(line1.end, line1.start)
+            if not _fits(line0, line1):
+                return None  # too small for this tool
         else:
-            target = pts[start % 4] if isinstance(start, int) else Point(*start)  # outline id, or a point
-            which = min(range(4), key=lambda i: ends[i].distance_to_point(target))
-        if which >= 2:  # the chosen corner is on line1 -> make that rail line0
-            line0, line1 = line1, line0
-            which -= 2
-        if which == 1:  # the chosen corner is the rail END -> flip both rails so it is the START
-            line0 = Line(line0.end, line0.start)
-            line1 = Line(line1.end, line1.start)
-        # A tool of `radius` insets `radius` off every edge, so the face must be
-        # wider than the tool DIAMETER on both axes -- else the inset collapses or
-        # crosses over (garbage). Too small for this tool => no tool-path.
-        gap = (line1.start - line0.start).length
-        if min(line0.length, line1.length) <= 2 * radius or gap <= 2 * radius:
-            return None
+            # The RASTER honours the milling direction too, not just the finishing contour.
+            # A one-directional raster's handedness is sign((across x along).z); with a CW/M3
+            # tool CLIMB keeps the uncut material on the LEFT of travel, i.e. that cross points
+            # +Z (conventional -> -Z). Keep the caller's sweep pattern AND start-high: pick the
+            # start corner that already yields the requested handedness -- a flat face ties all
+            # four corners and a horizontal top edge ties two, giving the slack to do so for
+            # free. Only when a SINGLE strictly-highest corner forces the wrong handedness do we
+            # toggle to the other pair (which flips it), trading the sweep pattern to keep the
+            # cutting direction correct.
+            if start is None:
+                zmax = max(p[2] for p in pts)
+                candidates = [p for p in pts if p[2] >= zmax - 1e-6]  # highest corner(s)
+            else:
+                start_pt = pts[start % 4] if isinstance(start, int) else Point(*start)
+                candidates = [min(pts, key=lambda p: p.distance_to_point(start_pt))]
+            target_sign = 1 if direction == "climb" else -1
+
+            def _handed(line0, line1):
+                across = line1.start - line0.start
+                along = line0.vector
+                cz = across[0] * along[1] - across[1] * along[0]
+                return 1 if cz > 1e-12 else (-1 if cz < -1e-12 else 0)
+
+            picked = fallback = None
+            # `lock_flip` pins the sweep to the caller's pair (never toggle to `alt`), so
+            # the flip orientation wins over climb; otherwise try `alt` if `chosen` can't
+            # match the requested direction.
+            pairs = (chosen,) if lock_flip else (chosen, alt)
+            for pair in pairs:  # prefer the caller's pattern; the other only if forced
+                for corner in candidates:
+                    line0, line1 = _orient(pair, corner)
+                    if not _fits(line0, line1):
+                        continue
+                    if fallback is None:
+                        fallback = (line0, line1)  # size-valid, in case none match direction
+                    if _handed(line0, line1) == target_sign:
+                        picked = (line0, line1)
+                        break
+                if picked is not None:
+                    break
+            if picked is None:
+                picked = fallback  # a degenerate face -> still cut it rather than drop it
+            if picked is None:
+                return None  # too small for this tool in every configuration
+            line0, line1 = picked
+
         return cls(line0, line1, radius, safe_z=safe_z, stepover=stepover, incline=incline, direction=direction, contour=contour)
 
     @classmethod
