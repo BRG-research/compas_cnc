@@ -618,13 +618,18 @@ def _outward_offset(pts, dist):
     return out
 
 
-def _auto_tab_points(ring, count):
-    """Equal-arc-length hold-down tab centres around a closed ``ring`` of points.
+def _auto_tab_points(ring, count, lift_width):
+    """Hold-down tab centres on a closed ``ring``, each CENTRED on a straight edge and kept
+    clear of every corner.
 
-    Same placement rule as :meth:`toolpath_2d_ramp._auto_tab_points`: walk the perimeter
-    and drop ``count`` markers at equal arc-length, each centred in its interval so none
-    land on a corner and proportionally more fall on the LONGEST edges (a long thin rib is
-    held near the quarters of its long sides). Drops a duplicated closing point first.
+    Same rule as :meth:`toolpath_2d_ramp._auto_tab_points`: a tab whose lift zone (width
+    ``lift_width``) straddles a corner leaves its bridge wrapped around a sharp vertex,
+    where it snaps off -- so tabs are only placed on the INTERIOR of an edge, at least half
+    a lift zone (plus a comfort clearance) from either end, and the ``count`` tabs are
+    spread EVENLY BY the remaining valid arc-length (the longest edges get proportionally
+    more, none land in or near a corner). The clearance relaxes toward the hard minimum
+    only if the part is too small; a ring with no edge a lift zone long falls back to its
+    longest-edge midpoints. Drops a duplicated closing point first.
     """
     pts = list(ring)
     if count < 1 or len(pts) < 3:
@@ -635,22 +640,47 @@ def _auto_tab_points(ring, count):
     if n < 3:
         return []
     seg_len = [pts[i].distance_to_point(pts[(i + 1) % n]) for i in range(n)]
-    perimeter = sum(seg_len)
-    if perimeter < 1e-9:
+    if sum(seg_len) < 1e-9:
         return []
-    spacing = perimeter / count
+
+    def edge_point(i, t):
+        a, b = pts[i], pts[(i + 1) % n]
+        return Point(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t)
+
+    def valid_arc(margin):
+        intervals = []
+        acc = total = 0.0
+        for i in range(n):
+            if seg_len[i] > 2.0 * margin + 1e-9:
+                intervals.append((acc + margin, acc + seg_len[i] - margin, i, acc))
+                total += seg_len[i] - 2.0 * margin
+            acc += seg_len[i]
+        return intervals, total
+
+    r = 0.5 * lift_width  # the lift zone must sit fully on one edge -> min corner keep-out
+    best = None
+    for clearance in (lift_width, 0.5 * lift_width, 0.25 * lift_width, 0.0):
+        intervals, total = valid_arc(r + clearance)
+        if total > 1e-9:
+            best = (intervals, total)  # keep the roomiest clearance that still fits the tabs
+            if total >= count * lift_width or len(intervals) >= count:
+                break
+    if best is None:  # no edge even as long as a lift zone -> best-effort longest-edge midpoints
+        order = sorted(range(n), key=lambda i: seg_len[i], reverse=True)
+        return [edge_point(i, 0.5) for i in order[:count]]
+
+    intervals, total = best
+    step = total / count
     tabs = []
     for k in range(count):
-        target = (k + 0.5) * spacing  # centred in the k-th interval -> off the corners
-        acc = 0.0
-        for i in range(n):
-            length = seg_len[i]
-            if length > 1e-9 and acc + length >= target:
-                t = (target - acc) / length
-                a, b = pts[i], pts[(i + 1) % n]
-                tabs.append(Point(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2]))
+        target = (k + 0.5) * step  # position along the concatenated VALID (corner-free) arc
+        acc_v = 0.0
+        for vs, ve, i, es in intervals:
+            span = ve - vs
+            if acc_v + span >= target - 1e-9:
+                tabs.append(edge_point(i, (vs + (target - acc_v) - es) / seg_len[i]))
                 break
-            acc += length
+            acc_v += span
     return tabs
 
 
@@ -754,7 +784,10 @@ def _paired_ramp_helix(top, bot, top_z, bot_z, radius, safe_z, step, tabs=0, tab
     # them. `bot_z` is the deepest cut, so the bridge top sits at bot_z + tab_height.
     tab_centres = []
     if tabs and int(tabs) > 0:
-        markers = _auto_tab_points([Point(*p) for p in obot], int(tabs))
+        # Same widened lift zone the bridges use below, so tabs are kept a full lift zone
+        # off every corner (a bridge wrapped round a vertex snaps off).
+        lift_width = 2.0 * radius + tab_width
+        markers = _auto_tab_points([Point(*p) for p in obot], int(tabs), lift_width)
         disks = [(float(m[0]), float(m[1])) for m in markers]
         # Widen the lift disk by the tool DIAMETER so `tab_width` of real uncut bridge
         # survives -- the helix eats a radius from each side, like the ramp does.
@@ -815,7 +848,7 @@ def circle_polyline(centre, radius, z=PART_BOTTOM, n=48):
     return Polyline(ring)
 
 
-def finish(folder, program, groups, curves, mesh=None, markers=None):
+def finish(folder, program, groups, curves, mesh=None, markers=None, feeds=None):
     """Write one ``.nc`` per tool group, dump the viewer bundle, and show the viewer.
 
     Parameters
@@ -849,7 +882,7 @@ def finish(folder, program, groups, curves, mesh=None, markers=None):
         post = Postprocessor(
             tool=tool,
             tool_number=numbers[tool.diameter],
-            feed=FEED,
+            feed=(feeds or {}).get(tool.diameter, FEED),  # per-tool override (see Job.feed), else FEED
             first_cut_feed_factor=FIRST_CUT_FEED_FACTOR,
             spindle_speed=SPINDLE,
             coolant="air",
@@ -944,6 +977,7 @@ class Job:
         self._by_tool = {}  # tool diameter -> [toolpaths] in build order
         self._separate = []  # (diameter, suffix, [toolpaths], color) forced into their OWN .nc
         self._curves = []  # (name, geometry, color) for the viewer
+        self._feeds = {}  # tool diameter -> cutting feed override (mm/min); others use FEED
 
     @property
     def stock_top(self):
@@ -1113,6 +1147,13 @@ class Job:
             self._curves += [("hole", circle_polyline(c, r, z=c[2]), RED) for c, r in holes]
         return self
 
+    def feed(self, diameter, feed):
+        """Override the cutting feed (mm/min) for ONE tool diameter; the rest keep
+        :data:`FEED`. Applies to every operation that tool runs (surface/drill/ramp). E.g.
+        ``.feed(3.175, 2 * ct.FEED)`` runs the Ø3.175 tool twice as fast."""
+        self._feeds[float(diameter)] = float(feed)
+        return self
+
     def run(self):
         """Write one ``.nc`` per tool (largest first), then any ``separate`` operations in
         their own files, and open the viewer."""
@@ -1127,4 +1168,4 @@ class Job:
         for diameter, suffix, toolpaths, color in self._separate:
             tool = Tool(diameter, 30.0, name=f"flat_{_dia_tag(diameter)}mm")
             groups.append((tool, suffix, toolpaths, color))
-        finish(self.folder, self.program, groups, self._curves, mesh=self.mesh)
+        finish(self.folder, self.program, groups, self._curves, mesh=self.mesh, feeds=self._feeds)

@@ -14,5 +14,6 @@ import _custom_toolpath as ct
     .surface()      # Ø6 + Ø3.175 mm: mill inside the up-facing faces (N-gon via hatch)
     .drill()        # Ø3.175 mm: helical-drill every *_drill circle through the stock
     .ramp(tabs=6, overcut=0.0, step_divisions=4)  # Ø3.175 mm: 4x finer Z-steps
+    .feed(3.175, 2 * ct.FEED)  # run the Ø3.175 tool 2x faster (800 mm/min); Ø6 keeps FEED
     .run()          # write one .nc per tool + open the viewer
 )

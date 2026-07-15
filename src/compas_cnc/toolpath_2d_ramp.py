@@ -427,13 +427,19 @@ class toolpath_2d_ramp:
         return out
 
     def _auto_tab_points(self, count):
-        """Auto-place ``count`` hold-down tabs at the most structurally stable spots.
+        """Auto-place ``count`` hold-down tabs, each CENTRED on a straight edge and kept
+        clear of every corner.
 
-        Walks the ramp CONTOUR (``self._pts``) at equal PERIMETER arc-length, each tab
-        centred within its interval. Because the spacing is by arc length, proportionally
-        more tabs fall on the LONGEST edges and none sit on a corner -- so a long thin
-        part is held near the quarters of its long sides (balanced, high span) rather than
-        at its weak ends. An OPEN ramp (a plunge) has no loop to hold, so returns ``[]``.
+        A tab whose lift zone (width :attr:`tab_width`) straddles a corner leaves its
+        uncut bridge wrapped around a sharp vertex -- the weakest possible spot, where it
+        snaps off. So a tab is only ever placed on the INTERIOR of an edge, at least half a
+        lift zone (plus a comfort clearance) from either end, and the ``count`` tabs are
+        spread EVENLY BY the remaining valid arc-length -- the longest edges (a thin part's
+        long sides) get proportionally more and none land in or near a corner. The corner
+        clearance is relaxed toward the hard minimum (half a lift zone) only if the part is
+        too small to host the tabs otherwise; a part with no edge even a lift zone long
+        falls back to the midpoints of its longest edges. An OPEN ramp (a plunge) has no
+        loop to hold, so returns ``[]``.
         """
         pts = self._pts
         if count < 1 or len(pts) < 4:
@@ -443,22 +449,48 @@ class toolpath_2d_ramp:
         if n < 3:
             return []
         seg_len = [ring[i].distance_to_point(ring[(i + 1) % n]) for i in range(n)]
-        perimeter = sum(seg_len)
-        if perimeter < 1e-9:
+        if sum(seg_len) < 1e-9:
             return []
-        spacing = perimeter / count
+
+        def edge_point(i, t):
+            a, b = ring[i], ring[(i + 1) % n]
+            return Point(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t)
+
+        def valid_arc(margin):
+            # each edge shrunk by `margin` at both ends -> (start_arc, end_arc, edge, edge_start)
+            intervals = []
+            acc = total = 0.0
+            for i in range(n):
+                if seg_len[i] > 2.0 * margin + 1e-9:
+                    intervals.append((acc + margin, acc + seg_len[i] - margin, i, acc))
+                    total += seg_len[i] - 2.0 * margin
+                acc += seg_len[i]
+            return intervals, total
+
+        r = 0.5 * self.tab_width  # the lift zone must sit fully on one edge -> min corner keep-out
+        best = None
+        for clearance in (self.tab_width, 0.5 * self.tab_width, 0.25 * self.tab_width, 0.0):
+            intervals, total = valid_arc(r + clearance)
+            if total > 1e-9:
+                best = (intervals, total)  # keep the roomiest clearance that still fits the tabs
+                if total >= count * self.tab_width or len(intervals) >= count:
+                    break
+        if best is None:  # no edge even as long as a lift zone -> best-effort longest-edge midpoints
+            order = sorted(range(n), key=lambda i: seg_len[i], reverse=True)
+            return [edge_point(i, 0.5) for i in order[:count]]
+
+        intervals, total = best
+        step = total / count
         tabs = []
         for k in range(count):
-            target = (k + 0.5) * spacing  # centred in the k-th interval -> off the corners
-            acc = 0.0
-            for i in range(n):
-                length = seg_len[i]
-                if length > 1e-9 and acc + length >= target:
-                    t = (target - acc) / length
-                    a, b = ring[i], ring[(i + 1) % n]
-                    tabs.append(Point(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2]))
+            target = (k + 0.5) * step  # position along the concatenated VALID (corner-free) arc
+            acc_v = 0.0
+            for vs, ve, i, es in intervals:
+                span = ve - vs
+                if acc_v + span >= target - 1e-9:
+                    tabs.append(edge_point(i, (vs + (target - acc_v) - es) / seg_len[i]))
                     break
-                acc += length
+                acc_v += span
         return tabs
 
     def _apply_tabs(self, points):
